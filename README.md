@@ -1,14 +1,14 @@
-# I/O Vdir [![Documentation](https://img.shields.io/docsrs/io-vdir)](https://docs.rs/io-vdir/latest/io_vdir) [![Matrix](https://img.shields.io/matrix/pimalaya:matrix.org?color=success&label=chat)](https://matrix.to/#/#pimalaya:matrix.org)
+# I/O Maildir [![Documentation](https://img.shields.io/docsrs/io-maildir)](https://docs.rs/io-maildir/latest/io_maildir) [![Matrix](https://img.shields.io/matrix/pimalaya:matrix.org?color=success&label=chat)](https://matrix.to/#/#pimalaya:matrix.org)
 
-Set of **I/O-free** Rust coroutines to manage [Vdir](https://vdirsyncer.pimutils.org/en/stable/vdir.html) filesystems, based on [io-fs](https://github.com/pimalaya/io-fs).
+Set of **I/O-free** Rust coroutines to manage [Maildir](https://en.wikipedia.org/wiki/Maildir) filesystems, based on [io-fs](https://github.com/pimalaya/io-fs).
 
-This library allows you to manage vCard files (.vcf) and iCal (.ics) files inside [Vdir](https://vdirsyncer.pimutils.org/en/stable/vdir.html) filesystems using an I/O-agnostic approach, based on 3 concepts:
+This library allows you to manage vCard files (.vcf) and iCal (.ics) files inside [Maildir](https://maildirsyncer.pimutils.org/en/stable/maildir.html) filesystems using an I/O-agnostic approach, based on 3 concepts:
 
 ### Coroutine
 
 A coroutine is an *I/O-free*, *resumable* and *composable* state machine that **emits I/O requests**. A coroutine is considered *terminated* when it does not emit I/O requests anymore.
 
-*See available coroutines at [./src/coroutines](https://github.com/pimalaya/io-vdir/tree/master/src/coroutines).*
+*See available coroutines at [./src/coroutines](https://github.com/pimalaya/io-maildir/tree/master/src/coroutines).*
 
 ### Runtime
 
@@ -22,61 +22,29 @@ The loop is the glue between coroutines and runtimes. It makes the coroutine pro
 
 ## Examples
 
-### List collections synchronously
-
-```rust,ignore
-use std::{path::PathBuf};
-
-use io_fs::runtimes::std::handle;
-use io_vdir::coroutines::list_collections::{ListCollections, ListCollectionsResult};
-
-let mut arg = None;
-let mut coroutine = ListCollections::new("/path/to/collections");
-
-let collections = loop {
-    match coroutine.resume(arg) {
-        ListCollectionsResult::Ok(collections) => break collections,
-        ListCollectionsResult::Err(err) => panic!("{err}"),
-        ListCollectionsResult::Io(io) => arg = Some(handle(io).unwrap()),
-    }
-};
-
-println!("Collection paths:");
-
-for collection in collections {
-    println!(" - {}", collection.path.display());
-}
-```
-
-*See complete examples at [./examples](https://github.com/pimalaya/io-vdir/blob/master/examples).*
+*TODO*
 
 ## More examples
 
 Have a look at projects built on the top of this library:
 
-- [io-addressbook](https://github.com/pimalaya/io-addressbook): Set of I/O-free Rust coroutines to manage contacts.
-- [io-calendar](https://github.com/pimalaya/io-calendar): Set of I/O-free Rust coroutines to manage calendars.
-- [Cardamum](https://github.com/pimalaya/cardamum): CLI to manage contacts.
-- [Calendula](https://github.com/pimalaya/calendula): CLI to manage calendars.
+*TODO*
 
-## License
+## Social
 
-This project is licensed under either of:
-
-- [MIT license](LICENSE-MIT)
-- [Apache License, Version 2.0](LICENSE-APACHE)
-
-at your option.
+- Chat on [Matrix](https://matrix.to/#/#pimalaya:matrix.org)
+- News on [Mastodon](https://fosstodon.org/@pimalaya) or [RSS](https://fosstodon.org/@pimalaya.rss)
+- Mail at [pimalaya.org@posteo.net](mailto:pimalaya.org@posteo.net)
 
 ## Sponsoring
 
 [![nlnet](https://nlnet.nl/logo/banner-160x60.png)](https://nlnet.nl/)
 
-Special thanks to the [NLnet foundation](https://nlnet.nl/) and the [European Commission](https://www.ngi.eu/) that helped the project to receive financial support from various programs:
+Special thanks to the [NLnet foundation](https://nlnet.nl/) and the [European Commission](https://www.ngi.eu/) that have been financially supporting the project for years:
 
-- [NGI Assure](https://nlnet.nl/project/Himalaya/) in 2022
-- [NGI Zero Entrust](https://nlnet.nl/project/Pimalaya/) in 2023
-- [NGI Zero Core](https://nlnet.nl/project/Pimalaya-PIM/) in 2024 *(still ongoing)*
+- 2022: [NGI Assure](https://nlnet.nl/project/Himalaya/)
+- 2023: [NGI Zero Entrust](https://nlnet.nl/project/Pimalaya/)
+- 2024: [NGI Zero Core](https://nlnet.nl/project/Pimalaya-PIM/) *(still ongoing in 2026)*
 
 If you appreciate the project, feel free to donate using one of the following providers:
 

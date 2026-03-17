@@ -60,11 +60,11 @@ impl GetMaildirMessage {
             match &mut self.state {
                 State::Locate(coroutine) => {
                     let path = match coroutine.resume(arg.take()) {
-                        LocateMaildirMessageByIdResult::Ok(path) => path,
-                        LocateMaildirMessageByIdResult::Err(err) => {
+                        LocateMaildirMessageByIdResult::Ok { path, .. } => path,
+                        LocateMaildirMessageByIdResult::Err { err } => {
                             break GetMaildirMessageResult::Err(err.into())
                         }
-                        LocateMaildirMessageByIdResult::Io(io) => {
+                        LocateMaildirMessageByIdResult::Io { io } => {
                             break GetMaildirMessageResult::Io(io)
                         }
                     };

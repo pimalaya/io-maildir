@@ -9,7 +9,10 @@ use io_fs::{
 };
 use thiserror::Error;
 
-use crate::maildir::Maildir;
+use crate::{
+    flag::{Flag, Flags},
+    maildir::{Maildir, MaildirSubdir},
+};
 
 /// Errors that can occur during the coroutine progression.
 #[derive(Clone, Debug, Error)]
@@ -23,15 +26,19 @@ pub enum LocateMaildirMessageByIdError {
 /// Output emitted when the coroutine terminates its progression.
 #[derive(Clone, Debug)]
 pub enum LocateMaildirMessageByIdResult {
-    /// The coroutine successfully terminated its progression.
-    Ok(PathBuf),
-
-    /// The coroutine encountered an error.
-    Err(LocateMaildirMessageByIdError),
-
     /// An I/O needs to be processed in order to make the coroutine
     /// progress further.
-    Io(FsIo),
+    Io { io: FsIo },
+
+    /// The coroutine successfully terminated its progression.
+    Ok {
+        path: PathBuf,
+        subdir: MaildirSubdir,
+        flags: Flags,
+    },
+
+    /// The coroutine encountered an error.
+    Err { err: LocateMaildirMessageByIdError },
 }
 
 #[derive(Debug)]
@@ -63,14 +70,22 @@ impl LocateMaildirMessageById {
         loop {
             match &mut self.state {
                 State::InspectNewAndTmp => {
-                    let new = self.maildir.new().join(&self.id);
-                    if new.is_file() {
-                        return LocateMaildirMessageByIdResult::Ok(new);
+                    let path = self.maildir.new().join(&self.id);
+                    if path.is_file() {
+                        return LocateMaildirMessageByIdResult::Ok {
+                            path,
+                            subdir: MaildirSubdir::New,
+                            flags: Flags::default(),
+                        };
                     }
 
-                    let tmp = self.maildir.tmp().join(&self.id);
-                    if tmp.is_file() {
-                        return LocateMaildirMessageByIdResult::Ok(tmp);
+                    let path = self.maildir.tmp().join(&self.id);
+                    if path.is_file() {
+                        return LocateMaildirMessageByIdResult::Ok {
+                            path,
+                            subdir: MaildirSubdir::New,
+                            flags: Flags::default(),
+                        };
                     }
 
                     self.state = State::InspectCur(ReadDir::new(self.maildir.cur()));
@@ -78,10 +93,10 @@ impl LocateMaildirMessageById {
                 State::InspectCur(coroutine) => {
                     let paths = match coroutine.resume(arg.take()) {
                         FsResult::Ok(paths) => paths,
-                        FsResult::Io(io) => return LocateMaildirMessageByIdResult::Io(io),
+                        FsResult::Io(io) => return LocateMaildirMessageByIdResult::Io { io },
                         FsResult::Err(err) => {
                             let err = LocateMaildirMessageByIdError::Inspect(err);
-                            return LocateMaildirMessageByIdResult::Err(err);
+                            return LocateMaildirMessageByIdResult::Err { err };
                         }
                     };
 
@@ -99,12 +114,24 @@ impl LocateMaildirMessageById {
                         };
 
                         if name.starts_with(&self.id) {
-                            return LocateMaildirMessageByIdResult::Ok(path);
+                            let flags = match name.rsplit_once(',') {
+                                None => Flags::default(),
+                                Some((_, flags)) => {
+                                    let flags = flags.chars().filter_map(Flag::from_char);
+                                    Flags::from_iter(flags)
+                                }
+                            };
+
+                            return LocateMaildirMessageByIdResult::Ok {
+                                path,
+                                subdir: MaildirSubdir::Cur,
+                                flags,
+                            };
                         }
                     }
 
                     let err = LocateMaildirMessageByIdError::NotFound(self.id.clone());
-                    return LocateMaildirMessageByIdResult::Err(err);
+                    return LocateMaildirMessageByIdResult::Err { err };
                 }
             }
         }

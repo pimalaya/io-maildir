@@ -45,27 +45,27 @@ enum State {
 /// I/O-free coroutine to move a Vdir message.
 #[derive(Debug)]
 pub struct MoveMaildirMessage {
-    target: Maildir,
-    target_subdir: MaildirSubdir,
     id: String,
+    target: Maildir,
+    target_subdir: Option<MaildirSubdir>,
     state: State,
 }
 
 impl MoveMaildirMessage {
     /// Creates a new coroutine from the given collection's path.
     pub fn new(
+        id: impl ToString,
         source: Maildir,
         target: Maildir,
-        target_subdir: MaildirSubdir,
-        id: impl ToString,
+        target_subdir: Option<MaildirSubdir>,
     ) -> Self {
         let coroutine = LocateMaildirMessageById::new(source.clone(), id.to_string());
         let state = State::Locate(coroutine);
 
         Self {
+            id: id.to_string(),
             target,
             target_subdir,
-            id: id.to_string(),
             state,
         }
     }
@@ -75,22 +75,23 @@ impl MoveMaildirMessage {
         loop {
             match &mut self.state {
                 State::Locate(coroutine) => {
-                    let source = match coroutine.resume(arg.take()) {
-                        LocateMaildirMessageByIdResult::Ok(path) => path,
-                        LocateMaildirMessageByIdResult::Err(err) => {
+                    let (source, subdir) = match coroutine.resume(arg.take()) {
+                        LocateMaildirMessageByIdResult::Ok { path, subdir, .. } => (path, subdir),
+                        LocateMaildirMessageByIdResult::Err { err } => {
                             return MoveMaildirMessageResult::Err(err.into())
                         }
-                        LocateMaildirMessageByIdResult::Io(io) => {
+                        LocateMaildirMessageByIdResult::Io { io } => {
                             return MoveMaildirMessageResult::Io(io)
                         }
                     };
-
                     let target = match self.target_subdir {
-                        MaildirSubdir::Cur => self.target.cur().join(&self.id).with_file_name(
-                            format!("{}{}2,", self.id, INFORMATIONAL_SUFFIX_SEPARATOR),
-                        ),
-                        MaildirSubdir::New => self.target.new().join(&self.id),
-                        MaildirSubdir::Tmp => self.target.tmp().join(&self.id),
+                        Some(MaildirSubdir::Cur) => {
+                            let name = format!("{}{}2,", self.id, INFORMATIONAL_SUFFIX_SEPARATOR);
+                            self.target.cur().join(&self.id).with_file_name(name)
+                        }
+                        Some(MaildirSubdir::New) => self.target.new().join(&self.id),
+                        Some(MaildirSubdir::Tmp) => self.target.tmp().join(&self.id),
+                        None => self.target.subdir(&subdir).join(&self.id),
                     };
 
                     self.state = State::Move(Rename::new(Some((source, target))))

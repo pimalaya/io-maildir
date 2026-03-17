@@ -32,6 +32,18 @@ impl Message {
         &self.path
     }
 
+    pub fn id(&self) -> Option<&str> {
+        let file_name = self.path.file_name()?;
+        let file_name = file_name.to_str()?;
+
+        let id = match file_name.rsplit_once(INFORMATIONAL_SUFFIX_SEPARATOR) {
+            Some((id, _)) => id,
+            None => file_name,
+        };
+
+        Some(id)
+    }
+
     pub fn contents(&self) -> &[u8] {
         &self.contents
     }
@@ -42,6 +54,12 @@ impl Message {
 
     pub fn parsed(&self) -> Option<mail_parser::Message<'_>> {
         MessageParser::new().parse(&self.contents)
+    }
+
+    pub fn headers(&self) -> Option<mail_parser::Message<'_>> {
+        MessageParser::new()
+            .with_minimal_headers()
+            .parse(&self.contents)
     }
 }
 

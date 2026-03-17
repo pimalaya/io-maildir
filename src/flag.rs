@@ -1,5 +1,7 @@
 use std::{collections::HashSet, fmt};
 
+use log::debug;
+
 #[derive(Clone, Debug, Default)]
 pub struct Flags(HashSet<Flag>);
 
@@ -11,9 +13,17 @@ impl fmt::Display for Flags {
     }
 }
 
-impl<T: IntoIterator<Item = Flag>> From<T> for Flags {
-    fn from(flags: T) -> Self {
-        Flags(flags.into_iter().collect())
+impl Flags {
+    pub fn from_iter(iter: impl IntoIterator<Item = Flag>) -> Self {
+        Flags(iter.into_iter().collect())
+    }
+
+    pub fn extend(&mut self, flags: Flags) {
+        self.0.extend(flags.0)
+    }
+
+    pub fn difference(&mut self, flags: &Flags) {
+        self.0 = self.0.difference(&flags.0).cloned().collect();
     }
 }
 
@@ -25,6 +35,23 @@ pub enum Flag {
     Trashed,
     Draft,
     Flagged,
+}
+
+impl Flag {
+    pub fn from_char(c: char) -> Option<Flag> {
+        match c {
+            'P' => Some(Flag::Passed),
+            'R' => Some(Flag::Replied),
+            'S' => Some(Flag::Seen),
+            'T' => Some(Flag::Trashed),
+            'D' => Some(Flag::Draft),
+            'F' => Some(Flag::Flagged),
+            c => {
+                debug!("invalid maildir flag `{c}`, ignoring");
+                None
+            }
+        }
+    }
 }
 
 impl fmt::Display for Flag {

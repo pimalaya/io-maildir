@@ -126,6 +126,10 @@ pub struct Maildir {
 }
 
 impl Maildir {
+    pub fn name(&self) -> Option<&str> {
+        self.root.file_name().and_then(|s| s.to_str())
+    }
+
     pub fn subdir(&self, subdir: &MaildirSubdir) -> &Path {
         match subdir {
             MaildirSubdir::Cur => self.cur(),

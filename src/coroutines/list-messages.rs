@@ -13,7 +13,7 @@ use crate::{maildir::Maildir, message::Message};
 
 /// Errors that can occur during the coroutine progression.
 #[derive(Clone, Debug, Error)]
-pub enum ListMessagesError {
+pub enum ListMaildirMessagesError {
     /// An error occured during the directory listing.
     #[error("List Vdir messages error")]
     ListDirsError(#[source] FsError),
@@ -25,12 +25,12 @@ pub enum ListMessagesError {
 
 /// Output emitted when the coroutine terminates its progression.
 #[derive(Clone, Debug)]
-pub enum ListMessagesResult {
+pub enum ListMaildirMessagesResult {
     /// The coroutine successfully terminated its progression.
     Ok(HashSet<Message>),
 
     /// The coroutine encountered an error.
-    Err(ListMessagesError),
+    Err(ListMaildirMessagesError),
 
     /// An I/O needs to be processed in order to make the coroutine
     /// progress further.
@@ -46,12 +46,12 @@ enum State {
 
 /// I/O-free coroutine to list messages in a Vdir collection.
 #[derive(Debug)]
-pub struct ListMessages {
+pub struct ListMaildirMessages {
     state: State,
     maildir: Maildir,
 }
 
-impl ListMessages {
+impl ListMaildirMessages {
     /// Creates a new coroutine from the given addressbook path.
     pub fn new(maildir: Maildir) -> Self {
         let coroutine = ReadDir::new(maildir.new());
@@ -60,16 +60,16 @@ impl ListMessages {
     }
 
     /// Makes the coroutine progress.
-    pub fn resume(&mut self, mut arg: Option<FsIo>) -> ListMessagesResult {
+    pub fn resume(&mut self, mut arg: Option<FsIo>) -> ListMaildirMessagesResult {
         loop {
             match &mut self.state {
                 State::ListNewMessages(coroutine) => {
                     let mut paths = match coroutine.resume(arg.take()) {
                         FsResult::Ok(paths) => paths,
-                        FsResult::Io(io) => break ListMessagesResult::Io(io),
+                        FsResult::Io(io) => break ListMaildirMessagesResult::Io(io),
                         FsResult::Err(err) => {
-                            let err = ListMessagesError::ListDirsError(err);
-                            break ListMessagesResult::Err(err);
+                            let err = ListMaildirMessagesError::ListDirsError(err);
+                            break ListMaildirMessagesResult::Err(err);
                         }
                     };
 
@@ -99,10 +99,10 @@ impl ListMessages {
                 State::ListCurMessages(paths, coroutine) => {
                     let mut cur_paths = match coroutine.resume(arg.take()) {
                         FsResult::Ok(paths) => paths,
-                        FsResult::Io(io) => break ListMessagesResult::Io(io),
+                        FsResult::Io(io) => break ListMaildirMessagesResult::Io(io),
                         FsResult::Err(err) => {
-                            let err = ListMessagesError::ListDirsError(err);
-                            break ListMessagesResult::Err(err);
+                            let err = ListMaildirMessagesError::ListDirsError(err);
+                            break ListMaildirMessagesResult::Err(err);
                         }
                     };
 
@@ -134,16 +134,16 @@ impl ListMessages {
                 State::ReadMessages(coroutine) => {
                     let contents = match coroutine.resume(arg.take()) {
                         FsResult::Ok(contents) => contents,
-                        FsResult::Io(io) => break ListMessagesResult::Io(io),
+                        FsResult::Io(io) => break ListMaildirMessagesResult::Io(io),
                         FsResult::Err(err) => {
-                            let err = ListMessagesError::ListFilesError(err);
-                            break ListMessagesResult::Err(err);
+                            let err = ListMaildirMessagesError::ListFilesError(err);
+                            break ListMaildirMessagesResult::Err(err);
                         }
                     };
 
                     let messages = contents.into_iter().map(Message::from).collect();
 
-                    break ListMessagesResult::Ok(messages);
+                    break ListMaildirMessagesResult::Ok(messages);
                 }
             }
         }

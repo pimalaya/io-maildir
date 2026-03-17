@@ -1,9 +1,27 @@
-use std::{collections::HashSet, fmt};
+use std::{collections::HashSet, fmt, path::Path};
 
 use log::debug;
 
 #[derive(Clone, Debug, Default)]
 pub struct Flags(HashSet<Flag>);
+
+impl From<&Path> for Flags {
+    fn from(path: &Path) -> Self {
+        let Some(file_name) = path.file_name() else {
+            return Default::default();
+        };
+
+        let Some(file_name) = file_name.to_str() else {
+            return Default::default();
+        };
+
+        let Some((_, flags)) = file_name.rsplit_once(',') else {
+            return Default::default();
+        };
+
+        Flags::from_iter(flags.chars().filter_map(Flag::from_char))
+    }
+}
 
 impl fmt::Display for Flags {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

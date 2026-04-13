@@ -1,4 +1,4 @@
-//! Module dedicated to the Vdir maildir.
+//! Maildir directory structure.
 
 use std::{
     ffi::{OsStr, OsString},
@@ -108,15 +108,13 @@ impl TryFrom<&OsStr> for MaildirSubdir {
     }
 }
 
-/// The Vdir maildir.
+/// A Maildir on the filesystem.
 ///
-/// Represents a directory that contains only files (items). A
-/// maildir may have [metadata], as defined in the vdirsyncer
-/// standard.
+/// Represents a directory with the standard `cur`, `new`, and `tmp`
+/// subdirectories. Use [`MaildirCreate`] to initialise one and
+/// [`TryFrom<PathBuf>`] to open an existing one.
 ///
-/// See [`crate::item::Item`].
-///
-/// [metadata]: https://vdirsyncer.pimutils.org/en/stable/vdir.html#metadata
+/// [`MaildirCreate`]: crate::coroutines::maildir_create::MaildirCreate
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Maildir {
     root: PathBuf,

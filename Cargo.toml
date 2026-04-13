@@ -1,36 +1,42 @@
 [package]
 name = "io-maildir"
-description = "Set of I/O-free coroutines to manage Maildir filesystems"
+description = "I/O-free Maildir library"
 version = "0.0.1"
 authors = ["Clément DOUIN <pimalaya.org@posteo.net>"]
-edition = "2021"
+rust-version = "1.87"
+edition = "2024"
 license = "MIT OR Apache-2.0"
-categories = ["api-bindings", "filesystem"]
-keywords = ["io-free", "coroutine", "maildir", "maildir++", "email"]
+categories = ["api-bindings", "filesystem", "email"]
+keywords = ["io-free", "coroutine", "maildir", "email"]
 homepage = "https://pimalaya.org"
 documentation = "https://docs.rs/io-maildir/latest/io_maildir"
 repository = "https://github.com/pimalaya/io-maildir"
 
 [package.metadata.docs.rs]
+all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
 serde = ["mail-parser/serde"]
 
+[[example]]
+name = "std_store_message"
+required-features = []
+
 [dev-dependencies]
 env_logger = "0.11"
-io-fs = { version = "0.0.1", default-features = false, features = ["std"] }
+io-fs = { version = "0.0.2", default-features = false, features = ["std"] }
 tempfile = "3.20"
+tokio = { version = "1", features = ["full"] }
 
 [dependencies]
 gethostname = "1"
-io-fs = { version = "0.0.1", default-features = false }
+io-fs = { version = "0.0.2", default-features = false }
 log = "0.4"
 mail-parser = "0.11"
 memchr = "2.7"
 thiserror = "2"
-uuid = { version = "1", features = ["v4"] }
 
 [patch.crates-io]
 io-fs.git = "https://github.com/pimalaya/io-fs"

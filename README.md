@@ -1,34 +1,98 @@
-# I/O Maildir [![Documentation](https://img.shields.io/docsrs/io-maildir)](https://docs.rs/io-maildir/latest/io_maildir) [![Matrix](https://img.shields.io/matrix/pimalaya:matrix.org?color=success&label=chat)](https://matrix.to/#/#pimalaya:matrix.org)
+# I/O Maildir [![Documentation](https://img.shields.io/docsrs/io-maildir?style=flat&logo=docs.rs&logoColor=white)](https://docs.rs/io-maildir/latest/io_maildir) [![Matrix](https://img.shields.io/badge/chat-%23pimalaya-blue?style=flat&logo=matrix&logoColor=white)](https://matrix.to/#/#pimalaya:matrix.org) [![Mastodon](https://img.shields.io/badge/news-%40pimalaya-blue?style=flat&logo=mastodon&logoColor=white)](https://fosstodon.org/@pimalaya)
 
-Set of **I/O-free** Rust coroutines to manage [Maildir](https://en.wikipedia.org/wiki/Maildir) filesystems, based on [io-fs](https://github.com/pimalaya/io-fs).
+**I/O-free** Maildir library written in Rust
 
-This library allows you to manage vCard files (.vcf) and iCal (.ics) files inside [Maildir](https://maildirsyncer.pimutils.org/en/stable/maildir.html) filesystems using an I/O-agnostic approach, based on 3 concepts:
+This library provides I/O-agnostic coroutines to manage [Maildir](https://en.wikipedia.org/wiki/Maildir) filesystems, based on [io-fs](https://github.com/pimalaya/io-fs). It is built on three concepts:
 
 ### Coroutine
 
-A coroutine is an *I/O-free*, *resumable* and *composable* state machine that **emits I/O requests**. A coroutine is considered *terminated* when it does not emit I/O requests anymore.
+A coroutine is an *I/O-free*, *resumable* and *composable* state machine. It **emits I/O requests** without performing any I/O itself, and **receives I/O responses** to make progress. A coroutine is terminated when it stops emitting I/O requests.
 
 *See available coroutines at [./src/coroutines](https://github.com/pimalaya/io-maildir/tree/master/src/coroutines).*
 
 ### Runtime
 
-A runtime contains all the I/O logic, and is responsible for **processing I/O requests** emitted by coroutines.
+A runtime contains all the I/O logic. It is responsible for **processing I/O requests** and returning the corresponding I/O responses. Runtimes are provided by [io-fs](https://github.com/pimalaya/io-fs/tree/master/src/runtimes).
 
 *See available runtimes at [io-fs](https://github.com/pimalaya/io-fs/tree/master/src/runtimes).*
 
 ### Loop
 
-The loop is the glue between coroutines and runtimes. It makes the coroutine progress while allowing runtime to process I/O.
+The loop is the glue between coroutines and runtimes. It drives the coroutine forward by feeding each `FsOutput` back as the next argument, until the coroutine terminates.
 
 ## Examples
 
-*TODO*
+### Create a Maildir and store a message (blocking)
+
+```rust,ignore
+use std::path::PathBuf;
+
+use io_fs::runtimes::std::handle;
+use io_maildir::{
+    coroutines::{
+        maildir_create::{MaildirCreate, MaildirCreateResult},
+        message_store::{MaildirMessageStore, MaildirMessageStoreResult},
+    },
+    flag::Flags,
+    maildir::{Maildir, MaildirSubdir},
+};
+
+let root = PathBuf::from("/path/to/maildir");
+
+// create the Maildir structure (root, cur, new, tmp)
+
+let mut arg = None;
+let mut create = MaildirCreate::new(root.clone());
+
+loop {
+    match create.resume(arg.take()) {
+        MaildirCreateResult::Ok => break,
+        MaildirCreateResult::Io(input) => arg = Some(handle(input).unwrap()),
+        MaildirCreateResult::Err(err) => panic!("{err}"),
+    }
+}
+
+let maildir = Maildir::try_from(root).unwrap();
+
+// store a message in /new
+
+let contents = b"From: alice@example.com\r\nSubject: Hello\r\n\r\nHello!\r\n".to_vec();
+
+let mut arg = None;
+let mut store = MaildirMessageStore::new(
+    maildir,
+    MaildirSubdir::New,
+    Flags::default(),
+    contents,
+);
+
+let (id, path) = loop {
+    match store.resume(arg.take()) {
+        MaildirMessageStoreResult::Ok { id, path } => break (id, path),
+        MaildirMessageStoreResult::Io(input) => arg = Some(handle(input).unwrap()),
+        MaildirMessageStoreResult::Err(err) => panic!("{err}"),
+    }
+};
+
+println!("stored {id} at {}", path.display());
+```
+
+*See complete examples at [./examples](https://github.com/pimalaya/io-maildir/blob/master/examples).*
 
 ## More examples
 
 Have a look at projects built on the top of this library:
 
-*TODO*
+- [himalaya](https://github.com/pimalaya/himalaya): CLI to manage emails
+
+## License
+
+This project is licensed under either of:
+
+- [MIT license](LICENSE-MIT)
+- [Apache License, Version 2.0](LICENSE-APACHE)
+
+at your option.
 
 ## Social
 

@@ -1,258 +1,270 @@
-use std::{collections::HashSet, io::ErrorKind};
+use std::path::PathBuf;
 
-use calcard::vcard::VCard;
 use io_fs::runtimes::std::handle;
-use io_vdir::{
-    collection::Collection,
+use io_maildir::{
     coroutines::{
-        create_collection::{CreateCollection, CreateCollectionResult},
-        create_item::{CreateItem, CreateItemResult},
-        delete_collection::{DeleteCollection, DeleteCollectionResult},
-        delete_item::{DeleteItem, DeleteItemResult},
-        list_collections::{ListCollections, ListCollectionsResult},
-        list_items::{ListItems, ListItemsResult},
-        update_collection::{UpdateCollection, UpdateCollectionResult},
-        update_item::{UpdateItem, UpdateItemResult},
+        flags_add::{MaildirFlagsAdd, MaildirFlagsAddResult},
+        flags_remove::{MaildirFlagsRemove, MaildirFlagsRemoveResult},
+        flags_set::{MaildirFlagsSet, MaildirFlagsSetResult},
+        maildir_create::{MaildirCreate, MaildirCreateResult},
+        maildir_delete::{MaildirDelete, MaildirDeleteResult},
+        maildir_list::{MaildirList, MaildirListResult},
+        maildir_rename::{MaildirRename, MaildirRenameResult},
+        message_copy::{MaildirMessageCopy, MaildirMessageCopyResult},
+        message_get::{MaildirMessageGet, MaildirMessageGetResult},
+        message_list::{MaildirMessagesList, MaildirMessagesListResult},
+        message_move::{MaildirMessageMove, MaildirMessageMoveResult},
+        message_store::{MaildirMessageStore, MaildirMessageStoreResult},
     },
-    item::{Item, ItemKind},
+    flag::{Flag, Flags},
+    maildir::{Maildir, MaildirSubdir},
 };
 use tempfile::tempdir;
 
+fn create_maildir(root: PathBuf) -> Maildir {
+    let mut arg = None;
+    let mut coroutine = MaildirCreate::new(root.clone());
+
+    loop {
+        match coroutine.resume(arg.take()) {
+            MaildirCreateResult::Ok => break,
+            MaildirCreateResult::Io(input) => arg = Some(handle(input).unwrap()),
+            MaildirCreateResult::Err(err) => panic!("{err}"),
+        }
+    }
+
+    Maildir::try_from(root).unwrap()
+}
+
 #[test]
 fn std() {
+    let _ = env_logger::try_init();
+
     let workdir = tempdir().unwrap();
     let root = workdir.path();
 
-    // should list empty collections
+    // should list zero maildirs in empty root
 
     let mut arg = None;
-    let mut list = ListCollections::new(&root);
+    let mut coroutine = MaildirList::new(root.to_path_buf());
 
-    let collections = loop {
-        match list.resume(arg) {
-            ListCollectionsResult::Ok(collections) => break collections,
-            ListCollectionsResult::Io(io) => arg = Some(handle(io).unwrap()),
-            ListCollectionsResult::Err(err) => panic!("{err}"),
+    let maildirs = loop {
+        match coroutine.resume(arg.take()) {
+            MaildirListResult::Ok(m) => break m,
+            MaildirListResult::Io(input) => arg = Some(handle(input).unwrap()),
+            MaildirListResult::Err(err) => panic!("{err}"),
         }
     };
 
-    assert!(collections.is_empty());
+    assert!(maildirs.is_empty());
 
-    // should create collection without metadata
+    // should create maildirs
 
-    let mut collection = Collection::new(&root);
+    let inbox = create_maildir(root.join("inbox"));
+    let drafts = create_maildir(root.join("drafts"));
+
+    assert!(root.join("inbox").join("cur").is_dir());
+    assert!(root.join("inbox").join("new").is_dir());
+    assert!(root.join("inbox").join("tmp").is_dir());
+
+    // should list two maildirs
 
     let mut arg = None;
-    let mut create = CreateCollection::new(collection.clone());
+    let mut coroutine = MaildirList::new(root.to_path_buf());
+
+    let maildirs = loop {
+        match coroutine.resume(arg.take()) {
+            MaildirListResult::Ok(m) => break m,
+            MaildirListResult::Io(input) => arg = Some(handle(input).unwrap()),
+            MaildirListResult::Err(err) => panic!("{err}"),
+        }
+    };
+
+    assert_eq!(maildirs.len(), 2);
+
+    // should store a message in /new
+
+    let msg = b"From: alice@example.com\r\nSubject: Test\r\n\r\nBody\r\n".to_vec();
+
+    let mut arg = None;
+    let mut coroutine =
+        MaildirMessageStore::new(inbox.clone(), MaildirSubdir::New, Flags::default(), msg);
+
+    let (id, msg_path) = loop {
+        match coroutine.resume(arg.take()) {
+            MaildirMessageStoreResult::Ok { id, path } => break (id, path),
+            MaildirMessageStoreResult::Io(input) => arg = Some(handle(input).unwrap()),
+            MaildirMessageStoreResult::Err(err) => panic!("{err}"),
+        }
+    };
+
+    assert!(msg_path.is_file());
+    assert!(msg_path.starts_with(inbox.new()));
+
+    // should list messages
+
+    let mut arg = None;
+    let mut coroutine = MaildirMessagesList::new(inbox.clone());
+
+    let messages = loop {
+        match coroutine.resume(arg.take()) {
+            MaildirMessagesListResult::Ok(m) => break m,
+            MaildirMessagesListResult::Io(input) => arg = Some(handle(input).unwrap()),
+            MaildirMessagesListResult::Err(err) => panic!("{err}"),
+        }
+    };
+
+    assert_eq!(messages.len(), 1);
+
+    // should get the message
+
+    let mut arg = None;
+    let mut coroutine = MaildirMessageGet::new(inbox.clone(), &id);
+
+    let message = loop {
+        match coroutine.resume(arg.take()) {
+            MaildirMessageGetResult::Ok(m) => break m,
+            MaildirMessageGetResult::Io(input) => arg = Some(handle(input).unwrap()),
+            MaildirMessageGetResult::Err(err) => panic!("{err}"),
+        }
+    };
+
+    assert_eq!(message.id(), Some(id.as_str()));
+
+    // should set flags (message now lives in /new, flags are a no-op there)
+
+    let mut arg = None;
+    let flags_seen = Flags::from_iter([Flag::Seen]);
+    let mut coroutine = MaildirFlagsSet::new(inbox.clone(), &id, flags_seen);
 
     loop {
-        match create.resume(arg) {
-            CreateCollectionResult::Ok => break,
-            CreateCollectionResult::Io(io) => arg = Some(handle(io).unwrap()),
-            CreateCollectionResult::Err(err) => panic!("{err}"),
+        match coroutine.resume(arg.take()) {
+            MaildirFlagsSetResult::Ok => break,
+            MaildirFlagsSetResult::Io(input) => arg = Some(handle(input).unwrap()),
+            MaildirFlagsSetResult::Err(err) => panic!("{err}"),
+        }
+    }
+
+    // should add flags (no-op for /new messages)
+
+    let mut arg = None;
+    let flags_flagged = Flags::from_iter([Flag::Flagged]);
+    let mut coroutine = MaildirFlagsAdd::new(inbox.clone(), &id, flags_flagged);
+
+    loop {
+        match coroutine.resume(arg.take()) {
+            MaildirFlagsAddResult::Ok => break,
+            MaildirFlagsAddResult::Io(input) => arg = Some(handle(input).unwrap()),
+            MaildirFlagsAddResult::Err(err) => panic!("{err}"),
+        }
+    }
+
+    // should remove flags (no-op for /new messages)
+
+    let mut arg = None;
+    let flags_seen2 = Flags::from_iter([Flag::Seen]);
+    let mut coroutine = MaildirFlagsRemove::new(inbox.clone(), &id, flags_seen2);
+
+    loop {
+        match coroutine.resume(arg.take()) {
+            MaildirFlagsRemoveResult::Ok => break,
+            MaildirFlagsRemoveResult::Io(input) => arg = Some(handle(input).unwrap()),
+            MaildirFlagsRemoveResult::Err(err) => panic!("{err}"),
+        }
+    }
+
+    // should copy message to drafts
+
+    let mut arg = None;
+    let mut coroutine =
+        MaildirMessageCopy::new(&id, inbox.clone(), drafts.clone(), Some(MaildirSubdir::New));
+
+    loop {
+        match coroutine.resume(arg.take()) {
+            MaildirMessageCopyResult::Ok => break,
+            MaildirMessageCopyResult::Io(input) => arg = Some(handle(input).unwrap()),
+            MaildirMessageCopyResult::Err(err) => panic!("{err}"),
+        }
+    }
+
+    // inbox still has one message after copy
+    let inbox_count = message_count(inbox.clone());
+    assert_eq!(inbox_count, 1);
+
+    // drafts now has one message
+    let drafts_count = message_count(drafts.clone());
+    assert_eq!(drafts_count, 1);
+
+    // should move message from inbox to drafts
+
+    let mut arg = None;
+    let mut coroutine =
+        MaildirMessageMove::new(&id, inbox.clone(), drafts.clone(), Some(MaildirSubdir::New));
+
+    loop {
+        match coroutine.resume(arg.take()) {
+            MaildirMessageMoveResult::Ok => break,
+            MaildirMessageMoveResult::Io(input) => arg = Some(handle(input).unwrap()),
+            MaildirMessageMoveResult::Err(err) => panic!("{err}"),
+        }
+    }
+
+    // inbox should now be empty
+    assert_eq!(message_count(inbox.clone()), 0);
+
+    // should rename maildir
+
+    let mut arg = None;
+    let mut coroutine = MaildirRename::new(drafts.as_ref().to_path_buf(), "archive");
+
+    loop {
+        match coroutine.resume(arg.take()) {
+            MaildirRenameResult::Ok => break,
+            MaildirRenameResult::Io(input) => arg = Some(handle(input).unwrap()),
+            MaildirRenameResult::Err(err) => panic!("{err}"),
+        }
+    }
+
+    assert!(!root.join("drafts").is_dir());
+    assert!(root.join("archive").is_dir());
+
+    // should delete maildirs
+
+    for name in ["inbox", "archive"] {
+        let mut arg = None;
+        let mut coroutine = MaildirDelete::new(root.join(name));
+
+        loop {
+            match coroutine.resume(arg.take()) {
+                MaildirDeleteResult::Ok => break,
+                MaildirDeleteResult::Io(input) => arg = Some(handle(input).unwrap()),
+                MaildirDeleteResult::Err(err) => panic!("{err}"),
+            }
         }
     }
 
     let mut arg = None;
-    let mut list = ListCollections::new(&root);
+    let mut coroutine = MaildirList::new(root.to_path_buf());
 
-    let collections = loop {
-        match list.resume(arg) {
-            ListCollectionsResult::Ok(collections) => break collections,
-            ListCollectionsResult::Io(io) => arg = Some(handle(io).unwrap()),
-            ListCollectionsResult::Err(err) => panic!("{err}"),
+    let maildirs = loop {
+        match coroutine.resume(arg.take()) {
+            MaildirListResult::Ok(m) => break m,
+            MaildirListResult::Io(input) => arg = Some(handle(input).unwrap()),
+            MaildirListResult::Err(err) => panic!("{err}"),
         }
     };
 
-    let expected_collections = HashSet::from_iter([collection.clone()]);
+    assert!(maildirs.is_empty());
+}
 
-    assert_eq!(collections, expected_collections);
-
-    // should not re-create existing collection
-
+fn message_count(maildir: Maildir) -> usize {
     let mut arg = None;
-    let mut create = CreateCollection::new(collection.clone());
-
+    let mut c = MaildirMessagesList::new(maildir);
     loop {
-        match create.resume(arg) {
-            CreateCollectionResult::Ok => panic!("should fail"),
-            CreateCollectionResult::Io(io) => match handle(io) {
-                Ok(output) => arg = Some(output),
-                Err(err) => break assert_eq!(err.kind(), ErrorKind::AlreadyExists),
-            },
-            CreateCollectionResult::Err(err) => panic!("{err}"),
+        match c.resume(arg.take()) {
+            MaildirMessagesListResult::Ok(m) => return m.len(),
+            MaildirMessagesListResult::Io(input) => arg = Some(handle(input).unwrap()),
+            MaildirMessagesListResult::Err(err) => panic!("{err}"),
         }
     }
-
-    // should update collection with metadata
-
-    collection.display_name = Some("Custom collection name".into());
-    collection.description = Some("This is a description.".into());
-    collection.color = Some("#000000".into());
-
-    let mut arg = None;
-    let mut update = UpdateCollection::new(collection.clone());
-
-    loop {
-        match update.resume(arg) {
-            UpdateCollectionResult::Ok => break,
-            UpdateCollectionResult::Io(io) => arg = Some(handle(io).unwrap()),
-            UpdateCollectionResult::Err(err) => panic!("{err}"),
-        }
-    }
-
-    let mut arg = None;
-    let mut list = ListCollections::new(&root);
-
-    let collections = loop {
-        match list.resume(arg) {
-            ListCollectionsResult::Ok(items) => break items,
-            ListCollectionsResult::Io(io) => arg = Some(handle(io).unwrap()),
-            ListCollectionsResult::Err(err) => panic!("{err}"),
-        }
-    };
-
-    let expected_collections = HashSet::from_iter([collection.clone()]);
-
-    assert_eq!(collections, expected_collections);
-
-    // should create item
-
-    let mut item = Item::new(
-        &collection,
-        ItemKind::Vcard(VCard::parse("BEGIN:VCARD\r\nUID: abc123\r\nEND:VCARD\r\n").unwrap()),
-    );
-
-    let mut arg = None;
-    let mut create = CreateItem::new(item.clone());
-
-    loop {
-        match create.resume(arg) {
-            CreateItemResult::Ok => break,
-            CreateItemResult::Io(io) => arg = Some(handle(io).unwrap()),
-            CreateItemResult::Err(err) => panic!("{err}"),
-        }
-    }
-
-    let mut arg = None;
-    let mut list = ListItems::new(&collection);
-
-    let items = loop {
-        match list.resume(arg) {
-            ListItemsResult::Ok(items) => break items,
-            ListItemsResult::Io(io) => arg = Some(handle(io).unwrap()),
-            ListItemsResult::Err(err) => panic!("{err}"),
-        }
-    };
-
-    assert_eq!(items.len(), 1);
-
-    let first_item = items.into_iter().next().unwrap();
-
-    assert_eq!(
-        first_item.to_string(),
-        "BEGIN:VCARD\r\nVERSION:4.0\r\nUID: abc123\r\nEND:VCARD\r\n"
-    );
-
-    // should update item
-
-    item.kind =
-        ItemKind::Vcard(VCard::parse("BEGIN:VCARD\r\nUID: def456\r\nEND:VCARD\r\n").unwrap());
-
-    let mut arg = None;
-    let mut update = UpdateItem::new(item);
-
-    loop {
-        match update.resume(arg) {
-            UpdateItemResult::Ok => break,
-            UpdateItemResult::Io(io) => arg = Some(handle(io).unwrap()),
-            UpdateItemResult::Err(err) => panic!("{err}"),
-        }
-    }
-
-    let mut arg = None;
-    let mut list = ListItems::new(&collection);
-
-    let items = loop {
-        match list.resume(arg) {
-            ListItemsResult::Ok(items) => break items,
-            ListItemsResult::Io(io) => arg = Some(handle(io).unwrap()),
-            ListItemsResult::Err(err) => panic!("{err}"),
-        }
-    };
-
-    assert_eq!(items.len(), 1);
-
-    let item = items.into_iter().next().unwrap();
-
-    assert_eq!(
-        item.to_string(),
-        "BEGIN:VCARD\r\nVERSION:4.0\r\nUID: def456\r\nEND:VCARD\r\n"
-    );
-
-    // // should read item
-
-    // let mut output = None;
-    // let mut fs = ReadItem::vcard(collection.path(), "item");
-
-    // let expected_item = loop {
-    //     match fs.resume(output) {
-    //         Ok(item) => break item,
-    //         Err(input) => output = Some(handle(input).unwrap()),
-    //     }
-    // };
-
-    // assert_eq!(item, expected_item);
-
-    // should delete item
-
-    let mut arg = None;
-    let mut delete = DeleteItem::new(item);
-
-    loop {
-        match delete.resume(arg) {
-            DeleteItemResult::Ok => break,
-            DeleteItemResult::Io(io) => arg = Some(handle(io).unwrap()),
-            DeleteItemResult::Err(err) => panic!("{err}"),
-        }
-    }
-
-    let mut arg = None;
-    let mut list = ListItems::new(&collection);
-
-    let items = loop {
-        match list.resume(arg) {
-            ListItemsResult::Ok(items) => break items,
-            ListItemsResult::Io(io) => arg = Some(handle(io).unwrap()),
-            ListItemsResult::Err(err) => panic!("{err}"),
-        }
-    };
-
-    assert_eq!(items.into_iter().count(), 0);
-
-    // should delete collection
-
-    let mut arg = None;
-    let mut delete = DeleteCollection::new(&collection);
-
-    loop {
-        match delete.resume(arg) {
-            DeleteCollectionResult::Ok => break,
-            DeleteCollectionResult::Io(io) => arg = Some(handle(io).unwrap()),
-            DeleteCollectionResult::Err(err) => panic!("{err}"),
-        }
-    }
-
-    let mut arg = None;
-    let mut list = ListCollections::new(root);
-
-    let collections = loop {
-        match list.resume(arg) {
-            ListCollectionsResult::Ok(items) => break items,
-            ListCollectionsResult::Io(io) => arg = Some(handle(io).unwrap()),
-            ListCollectionsResult::Err(err) => panic!("{err}"),
-        }
-    };
-
-    assert!(collections.is_empty());
 }

@@ -1,35 +1,22 @@
-//! Collection of I/O-free, resumable and composable Vdir state
+//! Collection of I/O-free, resumable and composable Maildir state
 //! machines.
 //!
-//! Coroutines emit [I/O] requests that need to be processed by
-//! [runtimes] in order to continue their progression.
+//! Coroutines emit [`FsInput`] requests that need to be processed by
+//! an [io-fs runtime] in order to continue their progression.
 //!
-//! [I/O]: crate::io
-//! [runtimes]: crate::runtimes
+//! [`FsInput`]: io_fs::io::FsInput
+//! [io-fs runtime]: https://docs.rs/io-fs/latest/io_fs/runtimes/index.html
 
-#[path = "add-flags.rs"]
-pub mod add_flags;
-#[path = "copy-message.rs"]
-pub mod copy_message;
-#[path = "create-maildir.rs"]
-pub mod create_maildir;
-#[path = "delete-maildir.rs"]
-pub mod delete_maildir;
-#[path = "get-message.rs"]
-pub mod get_message;
-#[path = "list-maildirs.rs"]
-pub mod list_maildirs;
-#[path = "list-messages.rs"]
-pub mod list_messages;
-#[path = "locate-message-by-id.rs"]
-pub mod locate_message_by_id;
-#[path = "move-message.rs"]
-pub mod move_message;
-#[path = "remove-flags.rs"]
-pub mod remove_flags;
-#[path = "rename-maildir.rs"]
-pub mod rename_maildir;
-#[path = "set-flags.rs"]
-pub mod set_flags;
-#[path = "store-message.rs"]
-pub mod store_message;
+pub mod flags_add;
+pub mod flags_remove;
+pub mod flags_set;
+pub mod maildir_create;
+pub mod maildir_delete;
+pub mod maildir_list;
+pub mod maildir_rename;
+pub mod message_copy;
+pub mod message_get;
+pub mod message_list;
+pub mod message_locate;
+pub mod message_move;
+pub mod message_store;

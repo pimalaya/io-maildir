@@ -39,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Dropped the `io-fs` dependency. Each coroutine now emits its own
+  `Wants*` variants directly (`WantsDirCreate`, `WantsFileRead`,
+  `WantsRename`, …) and consumes a local `FsOutput` (defined in
+  `src/io.rs`) fed back by the caller.
+
 - Updated all coroutines to use `FsInput` / `FsOutput` split from io-fs `0.0.2`.
 
 - Renamed coroutine modules to snake\_case matching struct names.

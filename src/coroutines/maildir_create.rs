@@ -1,46 +1,49 @@
 //! I/O-free coroutine to create a Maildir.
 
-use std::path::Path;
+use std::{collections::BTreeSet, path::Path};
 
-use io_fs::{
-    coroutines::dir_create::{FsDirCreate, FsDirCreateError, FsDirCreateResult},
-    io::{FsInput, FsOutput},
-};
+use log::trace;
 use thiserror::Error;
 
 /// Errors that can occur during the coroutine progression.
 #[derive(Clone, Debug, Error)]
 pub enum MaildirCreateError {
-    /// An error occurred while creating the Maildir directory
-    /// structure.
-    #[error("Create Maildir structure error")]
-    DirCreate(#[source] FsDirCreateError),
+    #[error("Invalid Maildir create arg: {0:?}")]
+    Invalid(Option<MaildirCreateArg>),
 }
 
-/// Output emitted after the coroutine finishes its progression.
+/// Result returned by [`MaildirCreate::resume`].
 #[derive(Clone, Debug)]
 pub enum MaildirCreateResult {
     /// The coroutine has successfully terminated its progression.
     Ok,
 
-    /// A filesystem I/O needs to be performed to make the coroutine
-    /// progress.
-    Io(FsInput),
+    /// The coroutine wants the caller to create the given directories
+    /// and feed back [`MaildirCreateArg::DirCreate`].
+    WantsDirCreate(BTreeSet<String>),
 
-    /// An error occurred during the coroutine progression.
+    /// The coroutine encountered an error.
     Err(MaildirCreateError),
+}
+
+/// Argument fed back to [`MaildirCreate::resume`] after the
+/// caller performed the requested filesystem operation.
+#[derive(Clone, Debug)]
+pub enum MaildirCreateArg {
+    /// Response to [`MaildirCreateResult::WantsDirCreate`].
+    DirCreate,
 }
 
 /// I/O-free coroutine to create a Maildir with its `cur`, `new` and
 /// `tmp` subdirectories.
 ///
 /// All four directories are created in a single I/O request. The
-/// [`BTreeSet`] inside [`FsDirCreate`] guarantees lexicographic order,
-/// so `root` is always created before its subdirectories.
-///
-/// [`BTreeSet`]: alloc::collections::BTreeSet
+/// [`BTreeSet`] guarantees lexicographic order, so `root` is always
+/// created before its subdirectories.
 #[derive(Debug)]
-pub struct MaildirCreate(FsDirCreate);
+pub struct MaildirCreate {
+    wants_dir_create: Option<BTreeSet<String>>,
+}
 
 impl MaildirCreate {
     /// Creates a new coroutine that will initialise a Maildir rooted
@@ -50,21 +53,33 @@ impl MaildirCreate {
         let cur = root.join("cur");
         let new = root.join("new");
         let tmp = root.join("tmp");
-        Self(FsDirCreate::new([
-            root.to_string_lossy(),
-            cur.to_string_lossy(),
-            new.to_string_lossy(),
-            tmp.to_string_lossy(),
-        ]))
+
+        let paths = BTreeSet::from_iter([
+            root.to_string_lossy().into_owned(),
+            cur.to_string_lossy().into_owned(),
+            new.to_string_lossy().into_owned(),
+            tmp.to_string_lossy().into_owned(),
+        ]);
+
+        Self {
+            wants_dir_create: Some(paths),
+        }
     }
 
     /// Makes the Maildir creation progress.
-    pub fn resume(&mut self, arg: Option<FsOutput>) -> MaildirCreateResult {
-        match self.0.resume(arg) {
-            FsDirCreateResult::Ok => MaildirCreateResult::Ok,
-            FsDirCreateResult::Io(input) => MaildirCreateResult::Io(input),
-            FsDirCreateResult::Err(err) => {
-                MaildirCreateResult::Err(MaildirCreateError::DirCreate(err))
+    pub fn resume(&mut self, arg: Option<impl Into<MaildirCreateArg>>) -> MaildirCreateResult {
+        match (self.wants_dir_create.take(), arg.map(Into::into)) {
+            (Some(paths), None) => {
+                trace!("wants filesystem I/O to create {} directories", paths.len());
+                MaildirCreateResult::WantsDirCreate(paths)
+            }
+            (None, Some(MaildirCreateArg::DirCreate)) => {
+                trace!("resume after creating Maildir directories");
+                MaildirCreateResult::Ok
+            }
+            (_, arg) => {
+                let err = MaildirCreateError::Invalid(arg);
+                MaildirCreateResult::Err(err)
             }
         }
     }

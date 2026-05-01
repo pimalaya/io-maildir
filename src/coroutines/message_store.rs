@@ -1,6 +1,8 @@
 //! I/O-free coroutine to store a message in a Maildir.
 
 use std::{
+    collections::BTreeMap,
+    mem,
     path::PathBuf,
     process,
     sync::atomic::{AtomicUsize, Ordering},
@@ -8,13 +10,7 @@ use std::{
 };
 
 use gethostname::gethostname;
-use io_fs::{
-    coroutines::{
-        file_create::{FsFileCreate, FsFileCreateError, FsFileCreateResult},
-        rename::{FsRename, FsRenameError, FsRenameResult},
-    },
-    io::{FsInput, FsOutput},
-};
+use log::trace;
 use thiserror::Error;
 
 use crate::{
@@ -28,34 +24,47 @@ static COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// Errors that can occur during the coroutine progression.
 #[derive(Clone, Debug, Error)]
 pub enum MaildirMessageStoreError {
-    /// An error occurred while creating the temporary file.
-    #[error("Store Maildir message: write tmp file error")]
-    CreateFile(#[source] FsFileCreateError),
-
-    /// An error occurred while moving the temporary file to its final
-    /// location.
-    #[error("Store Maildir message: rename tmp to final error")]
-    Rename(#[source] FsRenameError),
+    #[error("Invalid Maildir message store arg {0:?} for state {1:?}")]
+    Invalid(Option<MaildirMessageStoreArg>, State),
 }
 
-/// Output emitted after the coroutine finishes its progression.
+/// Result returned by [`MaildirMessageStore::resume`].
 #[derive(Clone, Debug)]
 pub enum MaildirMessageStoreResult {
     /// The coroutine has successfully terminated its progression.
     Ok { id: String, path: PathBuf },
 
-    /// A filesystem I/O needs to be performed to make the coroutine
-    /// progress.
-    Io(FsInput),
+    /// The coroutine wants the caller to create the given files and
+    /// feed back [`MaildirMessageStoreArg::FileCreate`].
+    WantsFileCreate(BTreeMap<String, Vec<u8>>),
 
-    /// An error occurred during the coroutine progression.
+    /// The coroutine wants the caller to rename each `(from, to)`
+    /// pair and feed back [`MaildirMessageStoreArg::Rename`].
+    WantsRename(Vec<(String, String)>),
+
+    /// The coroutine encountered an error.
     Err(MaildirMessageStoreError),
 }
 
-#[derive(Debug)]
-enum State {
-    Create(FsFileCreate),
-    Rename(FsRename),
+/// Internal progression state of [`MaildirMessageStore`].
+#[derive(Clone, Debug, Default)]
+pub enum State {
+    Start(Vec<u8>),
+    Created,
+    Renamed,
+    #[default]
+    Invalid,
+}
+
+/// Argument fed back to [`MaildirMessageStore::resume`] after the
+/// caller performed the requested filesystem operation.
+#[derive(Clone, Debug)]
+pub enum MaildirMessageStoreArg {
+    /// Response to [`MaildirMessageStoreResult::WantsFileCreate`].
+    FileCreate,
+
+    /// Response to [`MaildirMessageStoreResult::WantsRename`].
+    Rename,
 }
 
 /// I/O-free coroutine to store a message in a Maildir.
@@ -95,50 +104,45 @@ impl MaildirMessageStore {
             maildir.subdir(&subdir).to_string_lossy()
         );
 
-        let state = State::Create(FsFileCreate::new([(tmp_path.clone(), contents)]));
-
         Self {
             id,
             tmp_path,
             final_path,
-            state,
+            state: State::Start(contents),
         }
     }
 
     /// Makes the message store progress.
-    pub fn resume(&mut self, mut arg: Option<FsOutput>) -> MaildirMessageStoreResult {
-        loop {
-            match &mut self.state {
-                State::Create(coroutine) => {
-                    match coroutine.resume(arg.take()) {
-                        FsFileCreateResult::Ok => {}
-                        FsFileCreateResult::Io(input) => {
-                            return MaildirMessageStoreResult::Io(input);
-                        }
-                        FsFileCreateResult::Err(err) => {
-                            return MaildirMessageStoreResult::Err(
-                                MaildirMessageStoreError::CreateFile(err),
-                            );
-                        }
-                    }
+    pub fn resume(
+        &mut self,
+        arg: Option<impl Into<MaildirMessageStoreArg>>,
+    ) -> MaildirMessageStoreResult {
+        match (mem::take(&mut self.state), arg.map(Into::into)) {
+            (State::Start(contents), None) => {
+                trace!("wants tmp file create at {}", self.tmp_path);
 
-                    self.state = State::Rename(FsRename::new([(
-                        self.tmp_path.clone(),
-                        self.final_path.clone(),
-                    )]));
+                let files = BTreeMap::from_iter([(self.tmp_path.clone(), contents)]);
+                self.state = State::Created;
+                MaildirMessageStoreResult::WantsFileCreate(files)
+            }
+            (State::Created, Some(MaildirMessageStoreArg::FileCreate)) => {
+                trace!("created tmp file, wants rename to {}", self.final_path);
+
+                let pairs = vec![(self.tmp_path.clone(), self.final_path.clone())];
+                self.state = State::Renamed;
+                MaildirMessageStoreResult::WantsRename(pairs)
+            }
+            (State::Renamed, Some(MaildirMessageStoreArg::Rename)) => {
+                trace!("renamed tmp file to {}", self.final_path);
+
+                MaildirMessageStoreResult::Ok {
+                    id: self.id.clone(),
+                    path: PathBuf::from(&self.final_path),
                 }
-                State::Rename(coroutine) => {
-                    return match coroutine.resume(arg.take()) {
-                        FsRenameResult::Ok => MaildirMessageStoreResult::Ok {
-                            id: self.id.clone(),
-                            path: PathBuf::from(&self.final_path),
-                        },
-                        FsRenameResult::Io(input) => MaildirMessageStoreResult::Io(input),
-                        FsRenameResult::Err(err) => {
-                            MaildirMessageStoreResult::Err(MaildirMessageStoreError::Rename(err))
-                        }
-                    };
-                }
+            }
+            (state, arg) => {
+                let err = MaildirMessageStoreError::Invalid(arg, state);
+                MaildirMessageStoreResult::Err(err)
             }
         }
     }

@@ -1,15 +1,15 @@
 //! I/O-free coroutine to set (replace) flags on a Maildir message.
 
-use io_fs::{
-    coroutines::rename::{FsRename, FsRenameError, FsRenameResult},
-    io::{FsInput, FsOutput},
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    mem,
 };
+
+use log::trace;
 use thiserror::Error;
 
 use crate::{
-    coroutines::message_locate::{
-        MaildirMessageLocate, MaildirMessageLocateError, MaildirMessageLocateResult,
-    },
+    coroutines::message_locate::*,
     flag::Flags,
     maildir::{Maildir, MaildirSubdir},
     message::INFORMATIONAL_SUFFIX_SEPARATOR,
@@ -18,33 +18,50 @@ use crate::{
 /// Errors that can occur during the coroutine progression.
 #[derive(Clone, Debug, Error)]
 pub enum MaildirFlagsSetError {
+    #[error("Invalid Maildir flags set arg {0:?} for state {1:?}")]
+    Invalid(Option<MaildirFlagsSetArg>, State),
+
     /// The message could not be located.
     #[error(transparent)]
     Locate(#[from] MaildirMessageLocateError),
-
-    /// An error occurred while renaming the message file.
-    #[error("Set Maildir flags: rename message file error")]
-    Rename(#[from] FsRenameError),
 }
 
-/// Output emitted after the coroutine finishes its progression.
+/// Result returned by [`MaildirFlagsSet::resume`].
 #[derive(Clone, Debug)]
 pub enum MaildirFlagsSetResult {
     /// The coroutine has successfully terminated its progression.
     Ok,
 
-    /// A filesystem I/O needs to be performed to make the coroutine
-    /// progress.
-    Io(FsInput),
+    /// The coroutine wants the caller to read the entries inside the
+    /// given directories and feed back [`MaildirFlagsSetArg::DirRead`].
+    WantsDirRead(BTreeSet<String>),
 
-    /// An error occurred during the coroutine progression.
+    /// The coroutine wants the caller to rename each `(from, to)`
+    /// pair and feed back [`MaildirFlagsSetArg::Rename`].
+    WantsRename(Vec<(String, String)>),
+
+    /// The coroutine encountered an error.
     Err(MaildirFlagsSetError),
 }
 
-#[derive(Debug)]
-enum State {
+/// Internal progression state of [`MaildirFlagsSet`].
+#[derive(Clone, Debug, Default)]
+pub enum State {
     Locate(MaildirMessageLocate),
-    Rename(FsRename),
+    Renamed,
+    #[default]
+    Invalid,
+}
+
+/// Argument fed back to [`MaildirFlagsSet::resume`] after the
+/// caller performed the requested filesystem operation.
+#[derive(Clone, Debug)]
+pub enum MaildirFlagsSetArg {
+    /// Response to [`MaildirFlagsSetResult::WantsDirRead`].
+    DirRead(BTreeMap<String, BTreeSet<String>>),
+
+    /// Response to [`MaildirFlagsSetResult::WantsRename`].
+    Rename,
 }
 
 /// I/O-free coroutine to set (replace) the flags of a Maildir
@@ -72,23 +89,26 @@ impl MaildirFlagsSet {
     }
 
     /// Makes the flags set progress.
-    pub fn resume(&mut self, mut arg: Option<FsOutput>) -> MaildirFlagsSetResult {
-        loop {
-            match &mut self.state {
-                State::Locate(coroutine) => {
-                    let (path, subdir) = match coroutine.resume(arg.take()) {
-                        MaildirMessageLocateResult::Ok { path, subdir, .. } => (path, subdir),
-                        MaildirMessageLocateResult::Io(input) => {
-                            return MaildirFlagsSetResult::Io(input);
-                        }
-                        MaildirMessageLocateResult::Err(err) => {
-                            return MaildirFlagsSetResult::Err(err.into());
-                        }
-                    };
+    pub fn resume(&mut self, arg: Option<impl Into<MaildirFlagsSetArg>>) -> MaildirFlagsSetResult {
+        match (mem::take(&mut self.state), arg.map(Into::into)) {
+            (State::Locate(mut c), arg) => {
+                let locate_arg = match arg {
+                    None => None,
+                    Some(MaildirFlagsSetArg::DirRead(entries)) => {
+                        Some(MaildirMessageLocateArg::DirRead(entries))
+                    }
+                    Some(other) => {
+                        let state = State::Locate(c);
+                        let err = MaildirFlagsSetError::Invalid(Some(other), state);
+                        return MaildirFlagsSetResult::Err(err);
+                    }
+                };
 
-                    match subdir {
+                match c.resume(locate_arg) {
+                    MaildirMessageLocateResult::Ok { path, subdir, .. } => match subdir {
                         MaildirSubdir::New | MaildirSubdir::Tmp => {
-                            return MaildirFlagsSetResult::Ok;
+                            trace!("message is in /new or /tmp, flags are a no-op");
+                            MaildirFlagsSetResult::Ok
                         }
                         MaildirSubdir::Cur => {
                             let mut file_name = self.id.clone();
@@ -97,20 +117,27 @@ impl MaildirFlagsSet {
                             file_name.push_str(&self.flags.to_string());
 
                             let new_path = path.with_file_name(file_name);
-                            self.state = State::Rename(FsRename::new([(
-                                path.to_string_lossy(),
-                                new_path.to_string_lossy(),
-                            )]));
+                            trace!("rename {} -> {}", path.display(), new_path.display());
+
+                            let pairs = vec![(
+                                path.to_string_lossy().into_owned(),
+                                new_path.to_string_lossy().into_owned(),
+                            )];
+                            self.state = State::Renamed;
+                            MaildirFlagsSetResult::WantsRename(pairs)
                         }
+                    },
+                    MaildirMessageLocateResult::WantsDirRead(paths) => {
+                        self.state = State::Locate(c);
+                        MaildirFlagsSetResult::WantsDirRead(paths)
                     }
+                    MaildirMessageLocateResult::Err(err) => MaildirFlagsSetResult::Err(err.into()),
                 }
-                State::Rename(coroutine) => {
-                    return match coroutine.resume(arg.take()) {
-                        FsRenameResult::Ok => MaildirFlagsSetResult::Ok,
-                        FsRenameResult::Io(input) => MaildirFlagsSetResult::Io(input),
-                        FsRenameResult::Err(err) => MaildirFlagsSetResult::Err(err.into()),
-                    };
-                }
+            }
+            (State::Renamed, Some(MaildirFlagsSetArg::Rename)) => MaildirFlagsSetResult::Ok,
+            (state, arg) => {
+                let err = MaildirFlagsSetError::Invalid(arg, state);
+                MaildirFlagsSetResult::Err(err)
             }
         }
     }

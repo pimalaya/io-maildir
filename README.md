@@ -2,38 +2,41 @@
 
 **I/O-free** Maildir library written in Rust
 
-This library provides I/O-agnostic coroutines to manage [Maildir](https://en.wikipedia.org/wiki/Maildir) filesystems, based on [io-fs](https://github.com/pimalaya/io-fs). It is built on three concepts:
+This library provides I/O-agnostic coroutines to manage [Maildir](https://en.wikipedia.org/wiki/Maildir) filesystems. It is built on three concepts:
 
 ### Coroutine
 
-A coroutine is an *I/O-free*, *resumable* and *composable* state machine. It **emits I/O requests** without performing any I/O itself, and **receives I/O responses** to make progress. A coroutine is terminated when it stops emitting I/O requests.
+A coroutine is an *I/O-free*, *resumable* and *composable* state machine. It **emits filesystem requests** (`Wants*` variants such as `WantsDirCreate`, `WantsFileRead`, `WantsRename`) without performing any I/O itself, and **receives filesystem responses** (`FsOutput`) to make progress. A coroutine is terminated when it stops emitting requests.
 
 *See available coroutines at [./src/coroutines](https://github.com/pimalaya/io-maildir/tree/master/src/coroutines).*
 
-### Runtime
+### Caller
 
-A runtime contains all the I/O logic. It is responsible for **processing I/O requests** and returning the corresponding I/O responses. Runtimes are provided by [io-fs](https://github.com/pimalaya/io-fs/tree/master/src/runtimes).
-
-*See available runtimes at [io-fs](https://github.com/pimalaya/io-fs/tree/master/src/runtimes).*
+The caller drives the coroutine forward. On each `Wants*` result, it performs the requested filesystem operation (e.g. `std::fs::create_dir`, `std::fs::read`, `std::fs::rename`) and feeds the matching [`FsOutput`](src/io.rs) variant back into the next `resume` call.
 
 ### Loop
 
-The loop is the glue between coroutines and runtimes. It drives the coroutine forward by feeding each `FsOutput` back as the next argument, until the coroutine terminates.
+The loop is the glue between coroutine and caller. It alternates between `resume` and the actual filesystem call until the coroutine terminates.
 
 ## Examples
 
 ### Create a Maildir and store a message (blocking)
 
 ```rust,ignore
-use std::path::PathBuf;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs::{self, File},
+    io::Write,
+    path::PathBuf,
+};
 
-use io_fs::runtimes::std::handle;
 use io_maildir::{
     coroutines::{
         maildir_create::{MaildirCreate, MaildirCreateResult},
         message_store::{MaildirMessageStore, MaildirMessageStoreResult},
     },
     flag::Flags,
+    io::FsOutput,
     maildir::{Maildir, MaildirSubdir},
 };
 
@@ -47,7 +50,12 @@ let mut create = MaildirCreate::new(root.clone());
 loop {
     match create.resume(arg.take()) {
         MaildirCreateResult::Ok => break,
-        MaildirCreateResult::Io(input) => arg = Some(handle(input).unwrap()),
+        MaildirCreateResult::WantsDirCreate(paths) => {
+            for path in paths {
+                fs::create_dir(&path).unwrap();
+            }
+            arg = Some(FsOutput::DirCreate);
+        }
         MaildirCreateResult::Err(err) => panic!("{err}"),
     }
 }
@@ -69,7 +77,18 @@ let mut store = MaildirMessageStore::new(
 let (id, path) = loop {
     match store.resume(arg.take()) {
         MaildirMessageStoreResult::Ok { id, path } => break (id, path),
-        MaildirMessageStoreResult::Io(input) => arg = Some(handle(input).unwrap()),
+        MaildirMessageStoreResult::WantsFileCreate(files) => {
+            for (path, bytes) in files {
+                File::create(&path).unwrap().write_all(&bytes).unwrap();
+            }
+            arg = Some(FsOutput::FileCreate);
+        }
+        MaildirMessageStoreResult::WantsRename(pairs) => {
+            for (from, to) in pairs {
+                fs::rename(&from, &to).unwrap();
+            }
+            arg = Some(FsOutput::Rename);
+        }
         MaildirMessageStoreResult::Err(err) => panic!("{err}"),
     }
 };

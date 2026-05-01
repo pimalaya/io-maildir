@@ -32,16 +32,18 @@ impl fmt::Display for Flags {
 }
 
 impl Flags {
-    pub fn from_iter(iter: impl IntoIterator<Item = Flag>) -> Self {
-        Flags(iter.into_iter().collect())
-    }
-
     pub fn extend(&mut self, flags: Flags) {
         self.0.extend(flags.0)
     }
 
     pub fn difference(&mut self, flags: &Flags) {
         self.0 = self.0.difference(&flags.0).cloned().collect();
+    }
+}
+
+impl FromIterator<Flag> for Flags {
+    fn from_iter<I: IntoIterator<Item = Flag>>(iter: I) -> Self {
+        Flags(iter.into_iter().collect())
     }
 }
 

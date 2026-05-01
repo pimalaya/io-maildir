@@ -1,11 +1,13 @@
 //! Collection of I/O-free, resumable and composable Maildir state
 //! machines.
 //!
-//! Coroutines emit [`FsInput`] requests that need to be processed by
-//! an [io-fs runtime] in order to continue their progression.
+//! Each coroutine emits filesystem requests via the `Wants*` variants
+//! of its `*Result` enum (e.g. `WantsDirCreate`, `WantsFileRead`,
+//! `WantsRename`). The caller performs the matching operation and
+//! feeds the corresponding [`FsOutput`] variant back into the next
+//! `resume` call to make progress.
 //!
-//! [`FsInput`]: io_fs::io::FsInput
-//! [io-fs runtime]: https://docs.rs/io-fs/latest/io_fs/runtimes/index.html
+//! [`FsOutput`]: crate::io::FsOutput
 
 pub mod flags_add;
 pub mod flags_remove;

@@ -18,6 +18,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
+client = []
 serde = ["mail-parser/serde"]
 
 [[example]]

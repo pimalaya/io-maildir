@@ -1,12 +1,16 @@
 //! Maildir directory structure.
 
-use std::{
-    ffi::{OsStr, OsString},
+use core::{
     fmt,
     hash::{Hash, Hasher},
+    str::FromStr,
+};
+
+use alloc::{borrow::ToOwned, string::String};
+use std::{
+    ffi::{OsStr, OsString},
     io,
     path::{Path, PathBuf},
-    str::FromStr,
 };
 
 use thiserror::Error;

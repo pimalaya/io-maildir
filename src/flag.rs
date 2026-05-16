@@ -1,6 +1,9 @@
-use std::{collections::HashSet, fmt, path::Path};
+use core::fmt;
 
-use log::debug;
+use alloc::{string::ToString, vec::Vec};
+use std::{collections::HashSet, path::Path};
+
+use log::trace;
 
 #[derive(Clone, Debug, Default)]
 pub struct Flags(HashSet<Flag>);
@@ -67,7 +70,7 @@ impl Flag {
             'D' => Some(Flag::Draft),
             'F' => Some(Flag::Flagged),
             c => {
-                debug!("invalid maildir flag `{c}`, ignoring");
+                trace!("invalid maildir flag `{c}`, ignoring");
                 None
             }
         }

@@ -4,10 +4,8 @@
 //! Each coroutine emits filesystem requests via the `Wants*` variants
 //! of its `*Result` enum (e.g. `WantsDirCreate`, `WantsFileRead`,
 //! `WantsRename`). The caller performs the matching operation and
-//! feeds the corresponding [`FsOutput`] variant back into the next
+//! feeds the corresponding `*Arg` variant back into the next
 //! `resume` call to make progress.
-//!
-//! [`FsOutput`]: crate::io::FsOutput
 
 pub mod flags_add;
 pub mod flags_remove;

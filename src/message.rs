@@ -1,7 +1,7 @@
-use std::{
-    hash::{Hash, Hasher},
-    path::{Path, PathBuf},
-};
+use core::hash::{Hash, Hasher};
+
+use alloc::{borrow::ToOwned, vec::Vec};
+use std::path::{Path, PathBuf};
 
 use mail_parser::MessageParser;
 use thiserror::Error;

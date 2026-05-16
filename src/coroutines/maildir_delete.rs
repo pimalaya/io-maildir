@@ -1,6 +1,7 @@
 //! I/O-free coroutine to delete a Maildir.
 
-use std::{collections::BTreeSet, path::Path};
+use alloc::{collections::BTreeSet, string::String};
+use std::path::Path;
 
 use log::trace;
 use thiserror::Error;

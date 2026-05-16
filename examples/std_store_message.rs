@@ -7,7 +7,6 @@
 //! ```
 
 use std::{
-    collections::BTreeMap,
     fs::{self, File},
     io::Write,
     path::PathBuf,
@@ -22,25 +21,6 @@ use io_maildir::{
     maildir::{Maildir, MaildirSubdir},
 };
 use tempfile::tempdir;
-
-fn dir_create<I: IntoIterator<Item = String>>(paths: I) {
-    for path in paths {
-        fs::create_dir(&path).unwrap();
-    }
-}
-
-fn file_create(files: BTreeMap<String, Vec<u8>>) {
-    for (path, contents) in files {
-        let mut f = File::create(&path).unwrap();
-        f.write_all(&contents).unwrap();
-    }
-}
-
-fn rename(pairs: Vec<(String, String)>) {
-    for (from, to) in pairs {
-        fs::rename(&from, &to).unwrap();
-    }
-}
 
 fn main() {
     let _ = env_logger::try_init();
@@ -57,7 +37,9 @@ fn main() {
         match create.resume(arg.take()) {
             MaildirCreateResult::Ok => break,
             MaildirCreateResult::WantsDirCreate(paths) => {
-                dir_create(paths);
+                for path in paths {
+                    fs::create_dir(&path).unwrap();
+                }
                 arg = Some(MaildirCreateArg::DirCreate);
             }
             MaildirCreateResult::Err(err) => panic!("{err}"),
@@ -82,11 +64,15 @@ fn main() {
         match store.resume(arg.take()) {
             MaildirMessageStoreResult::Ok { id, path } => break (id, path),
             MaildirMessageStoreResult::WantsFileCreate(files) => {
-                file_create(files);
+                for (path, contents) in files {
+                    File::create(&path).unwrap().write_all(&contents).unwrap();
+                }
                 arg = Some(MaildirMessageStoreArg::FileCreate);
             }
             MaildirMessageStoreResult::WantsRename(pairs) => {
-                rename(pairs);
+                for (from, to) in pairs {
+                    fs::rename(&from, &to).unwrap();
+                }
                 arg = Some(MaildirMessageStoreArg::Rename);
             }
             MaildirMessageStoreResult::Err(err) => panic!("{err}"),

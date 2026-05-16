@@ -1,11 +1,18 @@
 //! I/O-free coroutine to store a message in a Maildir.
 
-use std::{
-    collections::BTreeMap,
+use core::{
     mem,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+
+use alloc::{
+    collections::BTreeMap,
+    string::{String, ToString},
+    vec::Vec,
+};
+use std::{
     path::PathBuf,
     process,
-    sync::atomic::{AtomicUsize, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 

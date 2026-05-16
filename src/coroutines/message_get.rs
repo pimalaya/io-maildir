@@ -1,10 +1,13 @@
 //! I/O-free coroutine to get a Maildir message by its ID.
 
-use std::{
+use core::mem;
+
+use alloc::{
     collections::{BTreeMap, BTreeSet},
-    mem,
-    path::PathBuf,
+    string::{String, ToString},
+    vec::Vec,
 };
+use std::path::PathBuf;
 
 use log::trace;
 use thiserror::Error;

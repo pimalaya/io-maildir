@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, File},
-    io::Write,
+    fs,
     path::PathBuf,
 };
 
@@ -25,18 +24,6 @@ use io_maildir::{
 };
 use tempfile::tempdir;
 
-fn dir_create<I: IntoIterator<Item = String>>(paths: I) {
-    for path in paths {
-        fs::create_dir(&path).unwrap();
-    }
-}
-
-fn dir_remove<I: IntoIterator<Item = String>>(paths: I) {
-    for path in paths {
-        fs::remove_dir_all(&path).unwrap();
-    }
-}
-
 fn dir_read<I: IntoIterator<Item = String>>(paths: I) -> BTreeMap<String, BTreeSet<String>> {
     let mut entries = BTreeMap::new();
 
@@ -54,13 +41,6 @@ fn dir_read<I: IntoIterator<Item = String>>(paths: I) -> BTreeMap<String, BTreeS
     entries
 }
 
-fn file_create(files: BTreeMap<String, Vec<u8>>) {
-    for (path, contents) in files {
-        let mut f = File::create(&path).unwrap();
-        f.write_all(&contents).unwrap();
-    }
-}
-
 fn file_read<I: IntoIterator<Item = String>>(paths: I) -> BTreeMap<String, Vec<u8>> {
     let mut contents = BTreeMap::new();
     for path in paths {
@@ -76,12 +56,6 @@ fn rename<I: IntoIterator<Item = (String, String)>>(pairs: I) {
     }
 }
 
-fn copy<I: IntoIterator<Item = (String, String)>>(pairs: I) {
-    for (from, to) in pairs {
-        fs::copy(&from, &to).unwrap();
-    }
-}
-
 fn create_maildir(root: PathBuf) -> Maildir {
     let mut arg: Option<MaildirCreateArg> = None;
     let mut coroutine = MaildirCreate::new(root.clone());
@@ -90,7 +64,9 @@ fn create_maildir(root: PathBuf) -> Maildir {
         match coroutine.resume(arg.take()) {
             MaildirCreateResult::Ok => break,
             MaildirCreateResult::WantsDirCreate(paths) => {
-                dir_create(paths);
+                for path in paths {
+                    fs::create_dir(&path).unwrap();
+                }
                 arg = Some(MaildirCreateArg::DirCreate);
             }
             MaildirCreateResult::Err(err) => panic!("{err}"),
@@ -98,6 +74,24 @@ fn create_maildir(root: PathBuf) -> Maildir {
     }
 
     Maildir::try_from(root).unwrap()
+}
+
+fn message_count(maildir: Maildir) -> usize {
+    let mut arg: Option<MaildirMessagesListArg> = None;
+    let mut c = MaildirMessagesList::new(maildir);
+
+    loop {
+        match c.resume(arg.take()) {
+            MaildirMessagesListResult::Ok(m) => return m.len(),
+            MaildirMessagesListResult::WantsDirRead(paths) => {
+                arg = Some(MaildirMessagesListArg::DirRead(dir_read(paths)));
+            }
+            MaildirMessagesListResult::WantsFileRead(paths) => {
+                arg = Some(MaildirMessagesListArg::FileRead(file_read(paths)));
+            }
+            MaildirMessagesListResult::Err(err) => panic!("{err}"),
+        }
+    }
 }
 
 #[test]
@@ -110,7 +104,7 @@ fn std() {
     // should list zero maildirs in empty root
 
     let mut arg: Option<MaildirListArg> = None;
-    let mut coroutine = MaildirList::new(root.to_path_buf());
+    let mut coroutine = MaildirList::new(root);
 
     let maildirs = loop {
         match coroutine.resume(arg.take()) {
@@ -136,7 +130,7 @@ fn std() {
     // should list two maildirs
 
     let mut arg: Option<MaildirListArg> = None;
-    let mut coroutine = MaildirList::new(root.to_path_buf());
+    let mut coroutine = MaildirList::new(root);
 
     let maildirs = loop {
         match coroutine.resume(arg.take()) {
@@ -162,7 +156,9 @@ fn std() {
         match coroutine.resume(arg.take()) {
             MaildirMessageStoreResult::Ok { id, path } => break (id, path),
             MaildirMessageStoreResult::WantsFileCreate(files) => {
-                file_create(files);
+                for (path, contents) in files {
+                    fs::write(&path, &contents).unwrap();
+                }
                 arg = Some(MaildirMessageStoreArg::FileCreate);
             }
             MaildirMessageStoreResult::WantsRename(pairs) => {
@@ -289,7 +285,9 @@ fn std() {
                 arg = Some(MaildirMessageCopyArg::DirRead(dir_read(paths)));
             }
             MaildirMessageCopyResult::WantsCopy(pairs) => {
-                copy(pairs);
+                for (from, to) in pairs {
+                    fs::copy(&from, &to).unwrap();
+                }
                 arg = Some(MaildirMessageCopyArg::Copy);
             }
             MaildirMessageCopyResult::Err(err) => panic!("{err}"),
@@ -297,12 +295,10 @@ fn std() {
     }
 
     // inbox still has one message after copy
-    let inbox_count = message_count(inbox.clone());
-    assert_eq!(inbox_count, 1);
+    assert_eq!(message_count(inbox.clone()), 1);
 
     // drafts now has one message
-    let drafts_count = message_count(drafts.clone());
-    assert_eq!(drafts_count, 1);
+    assert_eq!(message_count(drafts.clone()), 1);
 
     // should move message from inbox to drafts
 
@@ -330,7 +326,7 @@ fn std() {
     // should rename maildir
 
     let mut arg: Option<MaildirRenameArg> = None;
-    let mut coroutine = MaildirRename::new(drafts.as_ref().to_path_buf(), "archive");
+    let mut coroutine = MaildirRename::new(drafts.as_ref(), "archive");
 
     loop {
         match coroutine.resume(arg.take()) {
@@ -356,7 +352,9 @@ fn std() {
             match coroutine.resume(arg.take()) {
                 MaildirDeleteResult::Ok => break,
                 MaildirDeleteResult::WantsDirRemove(paths) => {
-                    dir_remove(paths);
+                    for path in paths {
+                        fs::remove_dir_all(&path).unwrap();
+                    }
                     arg = Some(MaildirDeleteArg::DirRemove);
                 }
                 MaildirDeleteResult::Err(err) => panic!("{err}"),
@@ -365,7 +363,7 @@ fn std() {
     }
 
     let mut arg: Option<MaildirListArg> = None;
-    let mut coroutine = MaildirList::new(root.to_path_buf());
+    let mut coroutine = MaildirList::new(root);
 
     let maildirs = loop {
         match coroutine.resume(arg.take()) {
@@ -378,22 +376,4 @@ fn std() {
     };
 
     assert!(maildirs.is_empty());
-}
-
-fn message_count(maildir: Maildir) -> usize {
-    let mut arg: Option<MaildirMessagesListArg> = None;
-    let mut c = MaildirMessagesList::new(maildir);
-
-    loop {
-        match c.resume(arg.take()) {
-            MaildirMessagesListResult::Ok(m) => return m.len(),
-            MaildirMessagesListResult::WantsDirRead(paths) => {
-                arg = Some(MaildirMessagesListArg::DirRead(dir_read(paths)));
-            }
-            MaildirMessagesListResult::WantsFileRead(paths) => {
-                arg = Some(MaildirMessagesListArg::FileRead(file_read(paths)));
-            }
-            MaildirMessagesListResult::Err(err) => panic!("{err}"),
-        }
-    }
 }

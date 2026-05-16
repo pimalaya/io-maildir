@@ -1,5 +1,9 @@
 //! I/O-free coroutine to rename a Maildir.
 
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 use std::path::Path;
 
 use log::trace;

@@ -1,10 +1,13 @@
 //! I/O-free coroutine to list messages in a Maildir.
 
-use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
-    mem,
-    path::PathBuf,
+use core::mem;
+
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    string::String,
+    vec::Vec,
 };
+use std::{collections::HashSet, path::PathBuf};
 
 use log::trace;
 use thiserror::Error;

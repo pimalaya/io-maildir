@@ -1,5 +1,5 @@
 {
-  description = "I/O-free HTTP/1.X client library written in Rust";
+  description = "Maildir client library, written in Rust";
 
   inputs = {
     nixpkgs = {

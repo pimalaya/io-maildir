@@ -1,13 +1,13 @@
 [package]
 name = "io-maildir"
-description = "I/O-free Maildir library"
+description = "Maildir client library"
 version = "0.0.1"
 authors = ["Clément DOUIN <pimalaya.org@posteo.net>"]
-rust-version = "1.87"
 edition = "2024"
+rust-version = "1.87"
 license = "MIT OR Apache-2.0"
-categories = ["api-bindings", "filesystem", "email"]
-keywords = ["io-free", "coroutine", "maildir", "email"]
+categories = ["email", "filesystem"]
+keywords = ["email", "maildir", "client", "io-free"]
 homepage = "https://pimalaya.org"
 documentation = "https://docs.rs/io-maildir/latest/io_maildir"
 repository = "https://github.com/pimalaya/io-maildir"

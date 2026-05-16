@@ -1,8 +1,11 @@
 //! I/O-free coroutine to copy a Maildir message.
 
-use std::{
+use core::mem;
+
+use alloc::{
     collections::{BTreeMap, BTreeSet},
-    mem,
+    string::{String, ToString},
+    vec::Vec,
 };
 
 use log::trace;

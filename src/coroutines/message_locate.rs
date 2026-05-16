@@ -1,9 +1,10 @@
 //! I/O-free coroutine to locate a Maildir message by its ID.
 
-use std::{
+use alloc::{
     collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
+    string::{String, ToString},
 };
+use std::path::{Path, PathBuf};
 
 use log::trace;
 use thiserror::Error;

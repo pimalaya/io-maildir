@@ -1,7 +1,11 @@
 //! I/O-free coroutine to list Maildirs inside a root directory.
 
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    string::String,
+};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::HashSet,
     path::{Path, PathBuf},
 };
 

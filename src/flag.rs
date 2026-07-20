@@ -23,7 +23,7 @@ use alloc::{
 
 use log::trace;
 
-use crate::path::MaildirFsPath;
+use crate::{entry::INFORMATIONAL_SUFFIX_SEPARATOR, path::MaildirFsPath};
 
 /// A set of Maildir flags plus opaque info-section letters.
 #[derive(Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
@@ -35,17 +35,47 @@ pub struct MaildirFlags {
     extra_letters: BTreeSet<char>,
 }
 
+/// Returns the `<letters>` part of an entry filename's
+/// `<id>:2,<letters>` info section, if any.
+///
+/// Splits at the marker, not at the last comma, so that dovecot's
+/// `,S=<size>,W=<vsize>` extensions in the unique part are not read as
+/// flag letters.
+fn info_letters(file_name: &str) -> Option<&str> {
+    let (_, info) = file_name.rsplit_once(INFORMATIONAL_SUFFIX_SEPARATOR)?;
+    let (_, letters) = info.split_once(',')?;
+    Some(letters)
+}
+
 impl From<&MaildirFsPath> for MaildirFlags {
     fn from(path: &MaildirFsPath) -> Self {
         let Some(file_name) = path.file_name() else {
             return Default::default();
         };
 
-        let Some((_, flags)) = file_name.rsplit_once(',') else {
+        let Some(letters) = info_letters(file_name) else {
             return Default::default();
         };
 
-        MaildirFlags::from_iter(flags.chars().filter_map(MaildirFlag::from_char))
+        // NOTE: unnamed letters are kept verbatim, otherwise a flag op
+        // would rewrite the name without the dovecot keyword slots.
+        let mut flags = BTreeSet::new();
+        let mut extra_letters = BTreeSet::new();
+        for c in letters.chars() {
+            match MaildirFlag::from_char(c) {
+                Some(flag) => {
+                    flags.insert(flag);
+                }
+                None => {
+                    extra_letters.insert(c);
+                }
+            }
+        }
+
+        MaildirFlags {
+            flags,
+            extra_letters,
+        }
     }
 }
 
@@ -112,7 +142,7 @@ impl MaildirFlags {
             return Default::default();
         };
 
-        let Some((_, letters)) = file_name.rsplit_once(',') else {
+        let Some(letters) = info_letters(file_name) else {
             return Default::default();
         };
 

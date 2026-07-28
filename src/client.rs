@@ -378,6 +378,22 @@ impl MaildirClient {
         self.run(MaildirEntryGet::new(maildir, id))
     }
 
+    /// Locates entry `id` in `maildir` and permanently removes its file.
+    ///
+    /// Unlike [`Self::remove_flags`] (which only rewrites the flag
+    /// suffix), this unlinks the message from disk. A missing entry
+    /// surfaces as a locate error.
+    pub fn delete_entry(
+        &self,
+        maildir: Maildir,
+        id: impl ToString,
+    ) -> Result<(), MaildirClientError> {
+        let (path, _subdir, _flags) = self.locate(maildir, id)?;
+        trace!("remove entry file at {path}");
+        fs::remove_file(path.as_str())?;
+        Ok(())
+    }
+
     /// Runs [`MaildirEntryList`] on `maildir`; bodies not loaded (pair with
     /// [`Self::read_entry`] / [`Self::read_entries`] /
     /// [`Self::read_entries_par`]).

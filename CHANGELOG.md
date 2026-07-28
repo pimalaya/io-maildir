@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added `MaildirClient::delete_entry`, which locates a message by id and permanently unlinks its file from disk (as opposed to `remove_flags`, which only rewrites the flag suffix). A missing entry surfaces as a locate error.
+
 ## [0.2.0] - 2026-07-16
 
 ### Changed

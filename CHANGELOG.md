@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-07
+
 ### Added
 
 - Added `MaildirClient::delete_entry`, which locates a message by id and permanently unlinks its file from disk (as opposed to `remove_flags`, which only rewrites the flag suffix). A missing entry surfaces as a locate error.
@@ -107,6 +109,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [#1]: https://github.com/pimalaya/io-maildir/issues/1
 
-[unreleased]: https://github.com/pimalaya/io-maildir/compare/v0.2.0..HEAD
+[unreleased]: https://github.com/pimalaya/io-maildir/compare/v0.2.1..HEAD
+[0.2.1]: https://github.com/pimalaya/io-maildir/compare/v0.2.0..v0.2.1
 [0.2.0]: https://github.com/pimalaya/io-maildir/compare/v0.1.0..v0.2.0
 [0.1.0]: https://github.com/pimalaya/io-maildir/compare/root..v0.1.0

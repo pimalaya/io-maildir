@@ -342,6 +342,9 @@ impl MaildirClient {
 
     /// Runs [`MaildirFlagsSet`] for `id` in `maildir`; resolves keywords
     /// through [`Self::dovecot_keywords`] if set.
+    ///
+    /// Replaces the whole set: unlike [`Self::add_flags`] and
+    /// [`Self::remove_flags`], keywords missing from `flags` are dropped.
     pub fn set_flags(
         &self,
         maildir: Maildir,
@@ -483,12 +486,35 @@ impl MaildirClient {
         let keywords = flags.drain_keywords();
 
         if let Some(header) = self.keywords_header {
-            if !keywords.is_empty() {
-                let sep = match header.separator() {
+            let separator = header.separator();
+            // NOTE: such a keyword would split into several corrupted
+            // ones on read-back, so dropping beats corrupting.
+            let safe: Vec<&String> = keywords
+                .iter()
+                .filter(|k| {
+                    if k.contains(separator) {
+                        log::warn!(
+                            "keyword `{k}` contains header separator `{separator}`; \
+                             dropping from {} header",
+                            header.header_name()
+                        );
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .collect();
+
+            if !safe.is_empty() {
+                let sep = match separator {
                     ' ' => " ",
                     _ => ", ",
                 };
-                let value = keywords.join(sep);
+                let value = safe
+                    .iter()
+                    .map(|k| k.as_str())
+                    .collect::<Vec<_>>()
+                    .join(sep);
                 contents = inject_header(&contents, header.header_name(), &value);
             }
         }

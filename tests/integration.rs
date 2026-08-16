@@ -145,7 +145,7 @@ fn end_to_end() {
         .iter()
         .find(|e| e.id() == Some(id_a.as_str()))
         .expect("locate entry_a");
-    let msg_a = client.read_entry(entry_a).expect("read entry_a");
+    let msg_a = client.read_entry(&inbox, entry_a).expect("read entry_a");
     assert_eq!(msg_a.id(), Some(id_a.as_str()));
     assert_eq!(msg_a.contents(), body_a.as_bytes());
 
@@ -153,7 +153,7 @@ fn end_to_end() {
 
     let entries_vec: Vec<_> = entries.iter().cloned().collect();
     let bulk_seq = client
-        .read_entries(&entries_vec)
+        .read_entries(&inbox, &entries_vec)
         .expect("read entries (sequential)");
     assert_eq!(bulk_seq.len(), 3);
     let seq_ids: Vec<&str> = bulk_seq.iter().filter_map(|m| m.id()).collect();
@@ -164,7 +164,7 @@ fn end_to_end() {
     // ── READ ENTRIES PAR (parallel bulk, identical result) ──────────
 
     let bulk_par = client
-        .read_entries_par(&entries_vec)
+        .read_entries_par(&inbox, &entries_vec)
         .expect("read entries (parallel)");
     assert_eq!(
         bulk_par, bulk_seq,
@@ -288,7 +288,7 @@ fn end_to_end() {
     );
     assert_eq!(
         client
-            .read_entry(copy_b)
+            .read_entry(&drafts, copy_b)
             .expect("read copied entry")
             .contents(),
         body_b.as_bytes(),
@@ -357,7 +357,7 @@ fn end_to_end() {
         .iter()
         .find(|e| {
             client
-                .read_entry(e)
+                .read_entry(&archive, e)
                 .map(|m| m.contents() == body_b.as_bytes())
                 .unwrap_or(false)
         })

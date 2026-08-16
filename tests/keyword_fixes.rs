@@ -181,7 +181,7 @@ fn normal_keyword_round_trips_via_header() {
 
     let (path, _, _) = client.locate(inbox.clone(), &id).expect("locate");
     let entry = MaildirEntry::from_path(path);
-    let msg = client.read_entry(&entry).expect("read");
+    let msg = client.read_entry(&inbox, &entry).expect("read");
     let kws = extract_keywords_header(msg.contents(), KeywordHeader::XKeywords);
     assert_eq!(kws, vec!["Important".to_string()]);
 }
@@ -207,7 +207,7 @@ fn keyword_with_separator_is_dropped_not_corrupted() {
 
     let (path, _, _) = client.locate(inbox.clone(), &id).expect("locate");
     let entry = MaildirEntry::from_path(path);
-    let msg = client.read_entry(&entry).expect("read");
+    let msg = client.read_entry(&inbox, &entry).expect("read");
     let kws = extract_keywords_header(msg.contents(), KeywordHeader::XKeywords);
 
     assert!(

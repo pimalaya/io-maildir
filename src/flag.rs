@@ -23,7 +23,10 @@ use alloc::{
 
 use log::trace;
 
-use crate::{entry::INFORMATIONAL_SUFFIX_SEPARATOR, path::MaildirFsPath};
+use crate::{
+    entry::{INFORMATIONAL_SUFFIX_SEPARATOR, headers::extract_keywords_header},
+    path::MaildirFsPath,
+};
 
 /// A set of Maildir flags plus opaque info-section letters.
 #[derive(Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
@@ -160,6 +163,30 @@ impl MaildirFlags {
             flags,
             extra_letters: BTreeSet::new(),
         }
+    }
+
+    /// Like [`Self::with_dovecot`], additionally reading the keywords
+    /// `contents` carries in `header`.
+    ///
+    /// The two conventions compose rather than exclude each other: a
+    /// message can name one keyword by a dovecot slot letter and
+    /// another in its header, and the flag set carries both. This is
+    /// the read counterpart of the serialisation the client performs on
+    /// store, which is why the client resolves an entry's flags through
+    /// it rather than leaving each caller to spell the composition out.
+    pub fn with_keywords(
+        path: &MaildirFsPath,
+        contents: &[u8],
+        table: &BTreeMap<char, String>,
+        header: Option<KeywordHeader>,
+    ) -> Self {
+        let mut flags = Self::with_dovecot(path, table);
+
+        if let Some(header) = header {
+            flags.extend_keywords(extract_keywords_header(contents, header));
+        }
+
+        flags
     }
 
     /// Adds raw keyword strings as [`MaildirFlag::Keyword`] entries.
@@ -329,5 +356,98 @@ impl FromStr for KeywordHeader {
 impl fmt::Display for KeywordHeader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.header_name())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{string::ToString, vec::Vec};
+
+    use crate::{flag::*, path::MaildirFsPath};
+
+    fn path(name: &str) -> MaildirFsPath {
+        MaildirFsPath::new(name)
+    }
+
+    fn keywords(flags: &MaildirFlags) -> Vec<&str> {
+        flags.iter().filter_map(MaildirFlag::as_keyword).collect()
+    }
+
+    #[test]
+    fn standard_letters_alone_without_a_table_or_a_header() {
+        let flags = MaildirFlags::with_keywords(
+            &path("/m/cur/1614632942.M1P2.host:2,FRS"),
+            b"X-Keywords: NonJunk\r\n\r\nbody",
+            &BTreeMap::new(),
+            None,
+        );
+
+        // NOTE: written in variant order, not in filename order.
+        assert_eq!(flags.to_string(), "RSF");
+        assert!(keywords(&flags).is_empty());
+    }
+
+    #[test]
+    fn unknown_letters_are_dropped_without_a_table() {
+        let flags = MaildirFlags::with_keywords(
+            &path("/m/cur/1614632942.M1P2.host:2,Sab"),
+            b"",
+            &BTreeMap::new(),
+            None,
+        );
+
+        assert_eq!(flags.to_string(), "S");
+    }
+
+    #[test]
+    fn slot_letters_resolve_through_the_table() {
+        let table = BTreeMap::from([('a', "NonJunk".to_string()), ('b', "Later".to_string())]);
+        let flags = MaildirFlags::with_keywords(
+            &path("/m/cur/1614632942.M1P2.host:2,Sab"),
+            b"",
+            &table,
+            None,
+        );
+
+        assert_eq!(keywords(&flags), ["Later", "NonJunk"]);
+    }
+
+    #[test]
+    fn header_keywords_join_the_letters() {
+        let flags = MaildirFlags::with_keywords(
+            &path("/m/cur/1614632942.M1P2.host:2,S"),
+            b"X-Keywords: NonJunk, Work\r\n\r\nbody",
+            &BTreeMap::new(),
+            Some(KeywordHeader::XKeywords),
+        );
+
+        assert!(flags.iter().any(|flag| *flag == MaildirFlag::Seen));
+        assert_eq!(keywords(&flags), ["NonJunk", "Work"]);
+    }
+
+    #[test]
+    fn both_conventions_compose() {
+        let table = BTreeMap::from([('a', "NonJunk".to_string())]);
+        let flags = MaildirFlags::with_keywords(
+            &path("/m/cur/1614632942.M1P2.host:2,a"),
+            b"X-Label: work personal\r\n\r\nbody",
+            &table,
+            Some(KeywordHeader::XLabel),
+        );
+
+        assert_eq!(keywords(&flags), ["NonJunk", "personal", "work"]);
+    }
+
+    #[test]
+    fn a_size_extension_is_neither_a_letter_nor_a_slot() {
+        let table = BTreeMap::from([('a', "NonJunk".to_string())]);
+        let flags = MaildirFlags::with_keywords(
+            &path("/m/new/1614632942.M1P2.host,S=1234,W=1300"),
+            b"",
+            &table,
+            None,
+        );
+
+        assert!(flags.is_empty());
     }
 }

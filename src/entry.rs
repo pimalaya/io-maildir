@@ -55,17 +55,28 @@ pub(crate) fn mint_id(secs: u64, nanos: u32, pid: u32, hostname: &str) -> String
     format!("{secs}.#{counter:x}M{nanos}P{pid}.{hostname}")
 }
 
-/// A Maildir entry: on-disk path plus body bytes.
+/// A Maildir entry: on-disk path, body bytes and flags.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct MaildirFullEntry {
     pub(crate) path: MaildirFsPath,
     pub(crate) contents: Vec<u8>,
+    pub(crate) flags: MaildirFlags,
 }
 
 impl MaildirFullEntry {
     /// Returns the on-disk path of the entry file.
     pub fn path(&self) -> &MaildirFsPath {
         &self.path
+    }
+
+    /// Returns the flags of the entry.
+    ///
+    /// An entry the client read carries its custom keywords resolved
+    /// through the client's own `dovecot_keywords` and
+    /// `keywords_header`; one built by hand carries the filename
+    /// letters alone.
+    pub fn flags(&self) -> &MaildirFlags {
+        &self.flags
     }
 
     /// Returns the entry id (filename before the info-section
@@ -109,7 +120,12 @@ impl From<MaildirFullEntry> for Vec<u8> {
 
 impl From<(MaildirFsPath, Vec<u8>)> for MaildirFullEntry {
     fn from((path, contents): (MaildirFsPath, Vec<u8>)) -> Self {
-        Self { path, contents }
+        let flags = MaildirFlags::from(&path);
+        Self {
+            path,
+            contents,
+            flags,
+        }
     }
 }
 

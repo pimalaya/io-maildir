@@ -14,7 +14,7 @@ use std::{
 };
 
 use gethostname::gethostname;
-use log::trace;
+use log::{trace, warn};
 use thiserror::Error;
 
 use crate::{
@@ -372,13 +372,18 @@ impl MaildirClient {
         Ok((path, subdir, flags))
     }
 
-    /// Runs [`MaildirEntryGet`] for `id` in `maildir`.
+    /// Runs [`MaildirEntryGet`] for `id` in `maildir`; resolves the
+    /// entry's keywords through [`Self::dovecot_keywords`] and
+    /// [`Self::keywords_header`].
     pub fn get(
         &self,
         maildir: Maildir,
         id: impl ToString,
     ) -> Result<MaildirFullEntry, MaildirClientError> {
-        self.run(MaildirEntryGet::new(maildir, id))
+        let table = self.keyword_table(&maildir);
+        let mut entry = self.run(MaildirEntryGet::new(maildir, id))?;
+        self.resolve_entry_keywords(&mut entry, &table);
+        Ok(entry)
     }
 
     /// Locates entry `id` in `maildir` and permanently removes its file.
@@ -408,36 +413,49 @@ impl MaildirClient {
     }
 
     /// Reads `entry`'s file as a [`MaildirFullEntry`]; applies
-    /// [`Self::strip_headers`] when set.
-    pub fn read_entry(&self, entry: &MaildirEntry) -> Result<MaildirFullEntry, MaildirClientError> {
-        let path = entry.path();
-        trace!("read entry at {path}");
-        let contents = fs::read(path.as_str())?;
-        let contents = if self.strip_headers.is_empty() {
-            contents
-        } else {
-            let names: Vec<&str> = self.strip_headers.iter().map(String::as_str).collect();
-            strip_headers(&contents, &names)
-        };
-        Ok(MaildirFullEntry::from((path.clone(), contents)))
+    /// [`Self::strip_headers`] when set, and resolves the entry's
+    /// keywords through [`Self::dovecot_keywords`] and
+    /// [`Self::keywords_header`].
+    ///
+    /// `maildir` is the Maildir `entry` was listed from, holding the
+    /// `dovecot-keywords` sidecar the slot letters are named by.
+    pub fn read_entry(
+        &self,
+        maildir: &Maildir,
+        entry: &MaildirEntry,
+    ) -> Result<MaildirFullEntry, MaildirClientError> {
+        self.read_entry_with(entry, &self.keyword_table(maildir))
     }
 
-    /// Reads every entry sequentially into an unordered set.
+    /// Reads every entry sequentially into an unordered set, loading
+    /// the dovecot table once for the whole batch.
     pub fn read_entries(
         &self,
+        maildir: &Maildir,
         entries: &[MaildirEntry],
     ) -> Result<BTreeSet<MaildirFullEntry>, MaildirClientError> {
-        entries.iter().map(|entry| self.read_entry(entry)).collect()
+        let table = self.keyword_table(maildir);
+
+        entries
+            .iter()
+            .map(|entry| self.read_entry_with(entry, &table))
+            .collect()
     }
 
     /// Parallel variant of [`Self::read_entries`] using
     /// [`thread::available_parallelism`].
     pub fn read_entries_par(
         &self,
+        maildir: &Maildir,
         entries: &[MaildirEntry],
     ) -> Result<BTreeSet<MaildirFullEntry>, MaildirClientError> {
+        let table = self.keyword_table(maildir);
+
         if entries.len() <= 1 {
-            return entries.iter().map(|entry| self.read_entry(entry)).collect();
+            return entries
+                .iter()
+                .map(|entry| self.read_entry_with(entry, &table))
+                .collect();
         }
 
         let n_threads = thread::available_parallelism()
@@ -453,9 +471,13 @@ impl MaildirClient {
 
                 for chunk in entries.chunks(chunk_size) {
                     let this = self;
+                    let table = &table;
                     handles.push(s.spawn(
                         move || -> Result<Vec<MaildirFullEntry>, MaildirClientError> {
-                            chunk.iter().map(|entry| this.read_entry(entry)).collect()
+                            chunk
+                                .iter()
+                                .map(|entry| this.read_entry_with(entry, table))
+                                .collect()
                         },
                     ));
                 }
@@ -566,6 +588,59 @@ impl MaildirClient {
         target_subdir: Option<MaildirSubdir>,
     ) -> Result<(), MaildirClientError> {
         self.run(MaildirEntryMove::new(id, source, target, target_subdir))
+    }
+
+    /// Reads `entry`'s file, applying [`Self::strip_headers`] when set,
+    /// and resolves its keywords against an already-loaded `table`.
+    fn read_entry_with(
+        &self,
+        entry: &MaildirEntry,
+        table: &BTreeMap<char, String>,
+    ) -> Result<MaildirFullEntry, MaildirClientError> {
+        let path = entry.path();
+        trace!("read entry at {path}");
+
+        let contents = fs::read(path.as_str())?;
+        let contents = if self.strip_headers.is_empty() {
+            contents
+        } else {
+            let names: Vec<&str> = self.strip_headers.iter().map(String::as_str).collect();
+            strip_headers(&contents, &names)
+        };
+
+        let mut entry = MaildirFullEntry::from((path.clone(), contents));
+        self.resolve_entry_keywords(&mut entry, table);
+
+        Ok(entry)
+    }
+
+    /// Replaces `entry`'s filename flags with the same set resolved
+    /// through `table` and [`Self::keywords_header`].
+    fn resolve_entry_keywords(&self, entry: &mut MaildirFullEntry, table: &BTreeMap<char, String>) {
+        entry.flags =
+            MaildirFlags::with_keywords(&entry.path, &entry.contents, table, self.keywords_header);
+    }
+
+    /// Dovecot slot table of `maildir`, empty when
+    /// [`Self::dovecot_keywords`] is unset or the sidecar cannot be
+    /// read.
+    ///
+    /// Unlike the store path, which fails rather than allocate slots
+    /// against a table it could not load, a read degrades to unresolved
+    /// keywords: a sidecar is optional, and a mailbox stays readable
+    /// whatever state its own is in.
+    fn keyword_table(&self, maildir: &Maildir) -> BTreeMap<char, String> {
+        if !self.dovecot_keywords {
+            return BTreeMap::new();
+        }
+
+        self.load_dovecot_keywords(maildir).unwrap_or_else(|err| {
+            warn!(
+                "could not load dovecot keywords at {}: {err}",
+                maildir.path()
+            );
+            BTreeMap::new()
+        })
     }
 
     /// Drains every keyword out of `flags`, allocating dovecot slots when

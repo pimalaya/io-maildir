@@ -17,3 +17,5 @@ Two path types keep the logical and the physical apart. MaildirFsPath is the lit
 ## Keyword strategies
 
 Maildir encodes only the six IANA flag letters in the filename. Custom keywords round-trip through one of two optional strategies, both driven by the std client: the dovecot-keywords sidecar mapping slot letters to keyword strings, or an inline X-Keywords / X-Label header injected into and stripped from the message body.
+
+The client owns both ends of that round trip, so a read resolves what a store serialised: the entries it hands back carry their keywords already resolved, against the sidecar of the Maildir they were listed from and the header it was told to read. A caller reads MaildirFullEntry::flags rather than interpreting a filename itself, which is what keeps the meaning of a Maildir name in one place. The composition itself is I/O-free, in MaildirFlags::with_keywords; the client only supplies the loaded table and the setting.

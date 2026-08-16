@@ -19,7 +19,11 @@ use thiserror::Error;
 
 use crate::{
     coroutine::*,
-    dovecot::{load::*, store::*, utils::allocate_keyword_slot},
+    dovecot::{
+        load::*,
+        store::*,
+        utils::{allocate_keyword_slot, keyword_slot},
+    },
     entry::{
         MaildirEntry, MaildirFullEntry,
         copy::*,
@@ -324,19 +328,22 @@ impl MaildirClient {
         id: impl ToString,
         mut flags: MaildirFlags,
     ) -> Result<(), MaildirClientError> {
-        self.resolve_keywords(&maildir, &mut flags)?;
+        self.allocate_keywords(&maildir, &mut flags)?;
         self.run(MaildirFlagsAdd::new(maildir, id, flags))
     }
 
     /// Runs [`MaildirFlagsRemove`] for `id` in `maildir`; resolves keywords
     /// through [`Self::dovecot_keywords`] if set.
+    ///
+    /// A keyword the sidecar does not name is left alone rather than
+    /// allocated a slot, nothing carrying it to begin with.
     pub fn remove_flags(
         &self,
         maildir: Maildir,
         id: impl ToString,
         mut flags: MaildirFlags,
     ) -> Result<(), MaildirClientError> {
-        self.resolve_keywords(&maildir, &mut flags)?;
+        self.lookup_keywords(&maildir, &mut flags)?;
         self.run(MaildirFlagsRemove::new(maildir, id, flags))
     }
 
@@ -351,7 +358,7 @@ impl MaildirClient {
         id: impl ToString,
         mut flags: MaildirFlags,
     ) -> Result<(), MaildirClientError> {
-        self.resolve_keywords(&maildir, &mut flags)?;
+        self.allocate_keywords(&maildir, &mut flags)?;
         self.run(MaildirFlagsSet::new(maildir, id, flags))
     }
 }
@@ -643,9 +650,38 @@ impl MaildirClient {
         })
     }
 
+    /// Drains every keyword out of `flags`, replacing each with the
+    /// dovecot slot letter the sidecar already names it by when
+    /// [`Self::dovecot_keywords`] is set; drops it otherwise.
+    ///
+    /// Allocates nothing, unlike [`Self::allocate_keywords`]: a keyword
+    /// the table does not name is on no message of this Maildir either,
+    /// so a remove naming it has nothing to remove, and minting a slot
+    /// would grow the sidecar towards its twenty-six letter ceiling one
+    /// spurious remove at a time.
+    fn lookup_keywords(
+        &self,
+        maildir: &Maildir,
+        flags: &mut MaildirFlags,
+    ) -> Result<(), MaildirClientError> {
+        let keywords = flags.drain_keywords();
+        if !self.dovecot_keywords || keywords.is_empty() {
+            return Ok(());
+        }
+
+        let table = self.load_dovecot_keywords(maildir)?;
+        let letters = keywords
+            .iter()
+            .filter_map(|keyword| keyword_slot(&table, keyword));
+
+        flags.extend_letters(letters);
+
+        Ok(())
+    }
+
     /// Drains every keyword out of `flags`, allocating dovecot slots when
     /// [`Self::dovecot_keywords`] is set; drops them otherwise.
-    fn resolve_keywords(
+    fn allocate_keywords(
         &self,
         maildir: &Maildir,
         flags: &mut MaildirFlags,

@@ -64,13 +64,23 @@ pub fn serialize_dovecot_keywords(table: &BTreeMap<char, String>) -> String {
     out
 }
 
+/// Returns the slot letter `table` already names `keyword` by, if any.
+///
+/// The read counterpart of [`allocate_keyword_slot`], for callers with
+/// nothing to write: a keyword the table does not name is on no message
+/// of that Maildir either.
+pub fn keyword_slot(table: &BTreeMap<char, String>, keyword: &str) -> Option<char> {
+    table
+        .iter()
+        .find(|(_, name)| name.as_str() == keyword)
+        .map(|(letter, _)| *letter)
+}
+
 /// Returns the lowest free slot if `keyword` is not yet known, or the
 /// existing letter if it is. Returns `None` when every slot is taken.
 pub fn allocate_keyword_slot(table: &mut BTreeMap<char, String>, keyword: &str) -> Option<char> {
-    for (letter, name) in table.iter() {
-        if name == keyword {
-            return Some(*letter);
-        }
+    if let Some(letter) = keyword_slot(table, keyword) {
+        return Some(letter);
     }
 
     for n in 0..SLOT_COUNT {

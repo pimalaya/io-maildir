@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added `MaildirFlags::with_keywords`, `with_dovecot` plus the keywords a `KeywordHeader` carries in the message bytes. The two conventions compose: a message can name one keyword by a dovecot slot letter and another in its header, and the flag set carries both.
 
+- Added `keyword_slot`, the non-allocating counterpart of `allocate_keyword_slot`: the letter a `dovecot-keywords` table already names a keyword by, if any.
+
 ### Changed
 
 - `MaildirClient::read_entry`, `read_entries` and `read_entries_par` now take the `Maildir` the entries were listed from, and resolve each entry's custom keywords through `dovecot_keywords` and `keywords_header`, as `store` already did on the way out. `get` resolves them too. The `dovecot-keywords` table is loaded once per call and only when the option is on, so the default path costs no extra syscall.
@@ -20,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A sidecar that is absent or unreadable yields no keywords and a warning rather than failing the read: it is optional, and a mailbox stays readable whatever state its own is in. The store path still fails instead, since allocating slots against a table it could not load would corrupt the mapping.
 
 ### Fixed
+
+- Fixed `remove_flags` growing the `dovecot-keywords` sidecar. Removing a keyword the table did not name allocated a slot for it and wrote the table back, although nothing carried it, so a sync repeatedly clearing an unset keyword leaked an entry per call and walked the folder towards its twenty-six slot ceiling. The remove path now resolves keywords against the existing table without allocating, through the new `keyword_slot`; only add and set allocate ([#4]).
 
 - Fixed flag operations dropping the custom keywords they never named. The entry locate behind `add_flags`, `remove_flags` and `set_flags` discarded the dovecot slot letters before renaming, so any flag write erased them; the info section is now split at its `:2,` marker rather than at the last comma, which also keeps a `,S=<size>,W=<vsize>` extension in a unique part from reading as flags. A keyword holding the active header separator is dropped on store rather than written and read back as several corrupted ones ([#3]).
 
@@ -125,6 +129,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [#1]: https://github.com/pimalaya/io-maildir/issues/1
 [#3]: https://github.com/pimalaya/io-maildir/issues/3
+[#4]: https://github.com/pimalaya/io-maildir/issues/4
 
 [unreleased]: https://github.com/pimalaya/io-maildir/compare/v0.2.1..HEAD
 [0.2.1]: https://github.com/pimalaya/io-maildir/compare/v0.2.0..v0.2.1

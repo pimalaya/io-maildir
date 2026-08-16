@@ -272,3 +272,51 @@ fn size_extensions_do_not_resolve_as_dovecot_keywords() {
         .collect();
     assert_eq!(resolved, vec!["NonJunk".to_string()]);
 }
+
+/// Removing a keyword the sidecar never named used to mint a slot for
+/// it and write the table back, so a sync repeatedly clearing an unset
+/// keyword walked the folder towards its twenty-six slot ceiling.
+#[test]
+fn removing_an_absent_keyword_leaves_the_sidecar_alone() {
+    let _ = env_logger::try_init();
+    let dir = tempdir().unwrap();
+    let root = MaildirFsPath::new(dir.path().to_string_lossy().into_owned());
+
+    let mut client = MaildirClient::new(root);
+    client.dovecot_keywords = true;
+    let inbox = setup(&client);
+
+    let (id, _) = client
+        .store(
+            inbox.clone(),
+            MaildirSubdir::Cur,
+            MaildirFlags::from_iter([MaildirFlag::keyword("NonJunk")]),
+            eml("ghost"),
+        )
+        .expect("store one-keyword message");
+
+    let before = client
+        .load_dovecot_keywords(&inbox)
+        .expect("load dovecot table");
+
+    for _ in 0..3 {
+        client
+            .remove_flags(
+                inbox.clone(),
+                &id,
+                MaildirFlags::from_iter([MaildirFlag::keyword("Ghost")]),
+            )
+            .expect("remove an absent keyword");
+    }
+
+    let after = client
+        .load_dovecot_keywords(&inbox)
+        .expect("load dovecot table");
+
+    assert_eq!(after, before, "an absent keyword must claim no slot");
+    assert_eq!(
+        dovecot_keywords(&client, &inbox, &id),
+        vec!["NonJunk".to_string()],
+        "and the message must keep the keyword it did carry",
+    );
+}

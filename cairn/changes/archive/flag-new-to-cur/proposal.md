@@ -1,7 +1,7 @@
 ---
 cairn: change
 id: flag-new-to-cur
-status: active
+status: landed
 created: 2026-08-23
 ---
 

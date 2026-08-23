@@ -8,7 +8,7 @@ The vocabulary lives in the coroutine module: the MaildirCoroutine trait, the Ma
 
 ## Concepts as modules
 
-The tree lives under maildir (the cur/new/tmp lifecycle: create, delete, list, rename), entries under entry (the delivery protocol and the store/get/list/locate/copy/move lifecycle), flags under flag (the info-suffix rewrite: add, remove, set) and the dovecot-keywords sidecar under dovecot. Each concept folder keeps its coroutines next to a sibling file holding the shared types they operate on.
+The tree lives under maildir (the cur/new/tmp lifecycle: create, delete, list, rename), entries under entry (the delivery protocol and the store/get/list/locate/copy/move lifecycle), flags under flag (the info-suffix rewrite plus the new to cur move it implies: add, remove, set) and the dovecot-keywords sidecar under dovecot. Each concept folder keeps its coroutines next to a sibling file holding the shared types they operate on.
 
 ## Path split and layout resolution
 

@@ -185,23 +185,27 @@ fn end_to_end() {
     assert_eq!(located_subdir, MaildirSubdir::New);
     assert!(located_flags.is_empty(), "entry_a stored without flags");
 
-    // ── FLAGS SET (no-op for /new) ──────────────────────────────────
+    // ── FLAGS SET (moves a /new entry into /cur) ────────────────────
 
-    // Per the Maildir spec, only /cur carries flags: ops on /new and
-    // /tmp messages are documented no-ops.
+    // Per the Maildir spec, only /cur carries flags, so an entry in
+    // /new gaining one moves there under the same id.
     client
         .set_flags(
             inbox.clone(),
             &id_a,
             MaildirFlags::from_iter([MaildirFlag::Seen]),
         )
-        .expect("set flags on /new entry_a (no-op)");
-    let (after_noop_path, after_noop_subdir, after_noop_flags) = client
+        .expect("set flags on /new entry_a");
+    let (moved_path, moved_subdir, moved_flags) = client
         .locate(inbox.clone(), &id_a)
-        .expect("locate entry_a after no-op set");
-    assert_eq!(after_noop_subdir, MaildirSubdir::New);
-    assert_eq!(after_noop_path, path_a);
-    assert!(after_noop_flags.is_empty());
+        .expect("locate entry_a after set");
+    assert_eq!(moved_subdir, MaildirSubdir::Cur);
+    assert_eq!(moved_path, inbox.cur().join(&format!("{id_a}:2,S")));
+    assert!(moved_flags.contains(&MaildirFlag::Seen));
+    assert!(
+        !Path::new(path_a.as_str()).exists(),
+        "old /new path should no longer exist",
+    );
 
     // ── FLAGS SET (renames /cur file) ───────────────────────────────
 

@@ -7,11 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-23
+
 ### Fixed
 
-- Fixed `copy` leaving a truncated entry behind when the process died mid-copy. The bytes went straight to the name the destination is enumerated under, so the window between the file appearing there and its last byte arriving exposed an entry that every Maildir reader lists as an ordinary message, empty and unparsable, and that copying again does not replace. The copy now lands in the target `tmp/` and is renamed into place, as store already did, so an interrupted copy leaves at worst a stray file in `tmp/` ([himalaya#738]).
+- Fixed `copy` leaving a truncated entry behind when the process died mid-copy.
 
-- Fixed `add_flags` and `set_flags` silently discarding the flags of an entry in `new/`. Both reported success and renamed nothing, so a write that meant to mark a message seen left it unread on disk, and a Maildir name in `new/` carries no info suffix to hold a flag anyway. An entry in `new/` gaining a non-empty flag set now moves to `cur/<id>:2,<flags>` under the same id, so an identifier a caller stored stays valid. A write leaving it with no flag keeps it in `new/`, and `remove_flags` is unchanged for that reason. An entry in `tmp/` is still never touched, being another process's delivery in flight ([himalaya#637]).
+  The bytes went straight to the name the destination is enumerated under, so the window between the file appearing there and its last byte arriving exposed an entry that every Maildir reader lists as an ordinary message, empty and unparsable, and that copying again does not replace. The copy now lands in the target `tmp/` and is renamed into place, as store already did, so an interrupted copy leaves at worst a stray file in `tmp/` ([himalaya#738]).
+
+- Fixed `add_flags` and `set_flags` silently discarding the flags of an entry in `new/`.
+
+  Both reported success and renamed nothing, so a write meant to mark a message seen left it unread on disk, and a Maildir name in `new/` carries no info suffix to hold a flag anyway. An entry in `new/` gaining a non-empty flag set now moves to `cur/<id>:2,<flags>` under the same id, so an identifier a caller stored stays valid. A write leaving it with no flag keeps it in `new/`, and `remove_flags` is unchanged for that reason. An entry in `tmp/` is still never touched, being another process's delivery in flight ([himalaya#637]).
 
 ## [0.3.0] - 2026-08-16
 
@@ -141,7 +147,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [himalaya#637]: https://github.com/pimalaya/himalaya/issues/637
 [himalaya#738]: https://github.com/pimalaya/himalaya/issues/738
 
-[unreleased]: https://github.com/pimalaya/io-maildir/compare/v0.3.0..HEAD
+[unreleased]: https://github.com/pimalaya/io-maildir/compare/v0.3.1..HEAD
+[0.3.1]: https://github.com/pimalaya/io-maildir/compare/v0.3.0..v0.3.1
 [0.3.0]: https://github.com/pimalaya/io-maildir/compare/v0.2.1..v0.3.0
 [0.2.1]: https://github.com/pimalaya/io-maildir/compare/v0.2.0..v0.2.1
 [0.2.0]: https://github.com/pimalaya/io-maildir/compare/v0.1.0..v0.2.0

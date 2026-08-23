@@ -77,14 +77,14 @@ impl MaildirCoroutine for MaildirList {
         match (&mut self.state, arg) {
             (State::Start { root }, None) => {
                 let pending = BTreeSet::from_iter([mem::take(root)]);
-                self.state = State::AwaitRead {
+                self.state = State::Read {
                     probe_pending: true,
                     found: BTreeSet::new(),
                 };
                 MaildirCoroutineState::Yielded(MaildirYield::WantsDirRead(pending))
             }
             (
-                State::AwaitRead {
+                State::Read {
                     probe_pending,
                     found,
                 },
@@ -139,7 +139,7 @@ impl MaildirCoroutine for MaildirList {
                 }
                 let probes: BTreeSet<MaildirFsPath> = markers.keys().cloned().collect();
 
-                self.state = State::AwaitProbe {
+                self.state = State::Probe {
                     markers,
                     next_pending,
                     found,
@@ -147,7 +147,7 @@ impl MaildirCoroutine for MaildirList {
                 MaildirCoroutineState::Yielded(MaildirYield::WantsDirExists(probes))
             }
             (
-                State::AwaitProbe {
+                State::Probe {
                     markers,
                     next_pending,
                     found,
@@ -176,7 +176,7 @@ impl MaildirCoroutine for MaildirList {
                     return MaildirCoroutineState::Complete(Ok(found));
                 }
 
-                self.state = State::AwaitRead {
+                self.state = State::Read {
                     probe_pending: false,
                     found,
                 };
@@ -195,11 +195,11 @@ enum State {
     Start {
         root: MaildirFsPath,
     },
-    AwaitRead {
+    Read {
         probe_pending: bool,
         found: BTreeSet<Maildir>,
     },
-    AwaitProbe {
+    Probe {
         markers: BTreeMap<MaildirFsPath, MaildirFsPath>,
         next_pending: BTreeSet<MaildirFsPath>,
         found: BTreeSet<Maildir>,
@@ -210,8 +210,8 @@ impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Start { .. } => f.write_str("start"),
-            Self::AwaitRead { .. } => f.write_str("await read reply"),
-            Self::AwaitProbe { .. } => f.write_str("await probe reply"),
+            Self::Read { .. } => f.write_str("read root"),
+            Self::Probe { .. } => f.write_str("probe maildirs"),
         }
     }
 }

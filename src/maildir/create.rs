@@ -73,10 +73,10 @@ impl MaildirCoroutine for MaildirCreate {
         match (&mut self.state, arg) {
             (State::Start { paths }, None) => {
                 let paths = mem::take(paths);
-                self.state = State::AwaitCreate;
+                self.state = State::Create;
                 MaildirCoroutineState::Yielded(MaildirYield::WantsDirCreate(paths))
             }
-            (State::AwaitCreate, Some(MaildirReply::DirCreate)) => {
+            (State::Create, Some(MaildirReply::DirCreate)) => {
                 debug!("created maildir");
                 MaildirCoroutineState::Complete(Ok(()))
             }
@@ -91,14 +91,14 @@ impl MaildirCoroutine for MaildirCreate {
 #[derive(Debug)]
 enum State {
     Start { paths: BTreeSet<MaildirFsPath> },
-    AwaitCreate,
+    Create,
 }
 
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Start { .. } => f.write_str("start"),
-            Self::AwaitCreate => f.write_str("await create reply"),
+            Self::Create => f.write_str("create maildir"),
         }
     }
 }

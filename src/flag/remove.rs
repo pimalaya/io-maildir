@@ -86,12 +86,12 @@ impl MaildirCoroutine for MaildirFlagsRemove {
                         existing.difference(&self.flags);
                         let new_path = rename_with_flags(&out.path, &self.id, &existing);
                         let pairs = vec![(out.path, new_path)];
-                        self.state = State::AwaitRename;
+                        self.state = State::Rename;
                         MaildirCoroutineState::Yielded(MaildirYield::WantsRename(pairs))
                     }
                 }
             }
-            (State::AwaitRename, Some(MaildirReply::Rename)) => {
+            (State::Rename, Some(MaildirReply::Rename)) => {
                 debug!("removed flags");
                 MaildirCoroutineState::Complete(Ok(()))
             }
@@ -106,14 +106,14 @@ impl MaildirCoroutine for MaildirFlagsRemove {
 #[derive(Debug)]
 enum State {
     Locate(MaildirEntryLocate),
-    AwaitRename,
+    Rename,
 }
 
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Locate(_) => f.write_str("locate message"),
-            Self::AwaitRename => f.write_str("await rename reply"),
+            Self::Rename => f.write_str("rename entry"),
         }
     }
 }

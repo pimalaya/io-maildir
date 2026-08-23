@@ -64,10 +64,10 @@ impl MaildirCoroutine for MaildirDelete {
         match (&mut self.state, arg) {
             (State::Start { paths }, None) => {
                 let paths = mem::take(paths);
-                self.state = State::AwaitRemove;
+                self.state = State::Remove;
                 MaildirCoroutineState::Yielded(MaildirYield::WantsDirRemove(paths))
             }
-            (State::AwaitRemove, Some(MaildirReply::DirRemove)) => {
+            (State::Remove, Some(MaildirReply::DirRemove)) => {
                 debug!("deleted maildir");
                 MaildirCoroutineState::Complete(Ok(()))
             }
@@ -82,14 +82,14 @@ impl MaildirCoroutine for MaildirDelete {
 #[derive(Debug)]
 enum State {
     Start { paths: BTreeSet<MaildirFsPath> },
-    AwaitRemove,
+    Remove,
 }
 
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Start { .. } => f.write_str("start"),
-            Self::AwaitRemove => f.write_str("await remove reply"),
+            Self::Remove => f.write_str("remove maildir"),
         }
     }
 }

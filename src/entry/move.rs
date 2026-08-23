@@ -89,7 +89,7 @@ impl MaildirCoroutine for MaildirEntryMove {
             (State::Locate(c), arg) => {
                 let out = maildir_try!(c, arg);
                 let subdir = self.target_subdir.clone().unwrap_or(out.subdir);
-                self.state = State::AwaitTime {
+                self.state = State::ReadTime {
                     source: out.path,
                     subdir,
                     flags: out.flags,
@@ -97,14 +97,14 @@ impl MaildirCoroutine for MaildirEntryMove {
                 MaildirCoroutineState::Yielded(MaildirYield::WantsTime)
             }
             (
-                State::AwaitTime {
+                State::ReadTime {
                     source,
                     subdir,
                     flags,
                 },
                 Some(MaildirReply::Time { secs, nanos }),
             ) => {
-                self.state = State::AwaitPid {
+                self.state = State::ReadPid {
                     source: mem::take(source),
                     subdir: subdir.clone(),
                     flags: mem::take(flags),
@@ -114,7 +114,7 @@ impl MaildirCoroutine for MaildirEntryMove {
                 MaildirCoroutineState::Yielded(MaildirYield::WantsPid)
             }
             (
-                State::AwaitPid {
+                State::ReadPid {
                     source,
                     subdir,
                     flags,
@@ -123,7 +123,7 @@ impl MaildirCoroutine for MaildirEntryMove {
                 },
                 Some(MaildirReply::Pid(pid)),
             ) => {
-                self.state = State::AwaitHostname {
+                self.state = State::ReadHostname {
                     source: mem::take(source),
                     subdir: subdir.clone(),
                     flags: mem::take(flags),
@@ -134,7 +134,7 @@ impl MaildirCoroutine for MaildirEntryMove {
                 MaildirCoroutineState::Yielded(MaildirYield::WantsHostname)
             }
             (
-                State::AwaitHostname {
+                State::ReadHostname {
                     source,
                     subdir,
                     flags,
@@ -147,10 +147,10 @@ impl MaildirCoroutine for MaildirEntryMove {
                 let id = mint_id(*secs, *nanos, *pid, &hostname);
                 let target = build_target_path(&self.target, subdir, &id, flags);
                 let pairs = vec![(mem::take(source), target)];
-                self.state = State::AwaitRename;
+                self.state = State::Rename;
                 MaildirCoroutineState::Yielded(MaildirYield::WantsRename(pairs))
             }
-            (State::AwaitRename, Some(MaildirReply::Rename)) => {
+            (State::Rename, Some(MaildirReply::Rename)) => {
                 debug!("moved entry");
                 MaildirCoroutineState::Complete(Ok(()))
             }
@@ -165,19 +165,19 @@ impl MaildirCoroutine for MaildirEntryMove {
 #[derive(Debug)]
 enum State {
     Locate(MaildirEntryLocate),
-    AwaitTime {
+    ReadTime {
         source: MaildirFsPath,
         subdir: MaildirSubdir,
         flags: MaildirFlags,
     },
-    AwaitPid {
+    ReadPid {
         source: MaildirFsPath,
         subdir: MaildirSubdir,
         flags: MaildirFlags,
         secs: u64,
         nanos: u32,
     },
-    AwaitHostname {
+    ReadHostname {
         source: MaildirFsPath,
         subdir: MaildirSubdir,
         flags: MaildirFlags,
@@ -185,17 +185,17 @@ enum State {
         nanos: u32,
         pid: u32,
     },
-    AwaitRename,
+    Rename,
 }
 
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Locate(_) => f.write_str("locate source"),
-            Self::AwaitTime { .. } => f.write_str("await time reply"),
-            Self::AwaitPid { .. } => f.write_str("await pid reply"),
-            Self::AwaitHostname { .. } => f.write_str("await hostname reply"),
-            Self::AwaitRename => f.write_str("await rename reply"),
+            Self::ReadTime { .. } => f.write_str("read time"),
+            Self::ReadPid { .. } => f.write_str("read pid"),
+            Self::ReadHostname { .. } => f.write_str("read hostname"),
+            Self::Rename => f.write_str("rename into place"),
         }
     }
 }

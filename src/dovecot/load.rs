@@ -70,20 +70,20 @@ impl MaildirCoroutine for MaildirDovecotLoad {
         match (&mut self.state, arg) {
             (State::Start, None) => {
                 let paths = BTreeSet::from_iter([self.path.clone()]);
-                self.state = State::AwaitProbe;
+                self.state = State::Probe;
                 MaildirCoroutineState::Yielded(MaildirYield::WantsFileExists(paths))
             }
-            (State::AwaitProbe, Some(MaildirReply::FileExists(map))) => {
+            (State::Probe, Some(MaildirReply::FileExists(map))) => {
                 let exists = map.get(&self.path).copied().unwrap_or(false);
                 if !exists {
                     debug!("no dovecot-keywords file, empty table");
                     return MaildirCoroutineState::Complete(Ok(BTreeMap::new()));
                 }
                 let paths = BTreeSet::from_iter([self.path.clone()]);
-                self.state = State::AwaitRead;
+                self.state = State::Read;
                 MaildirCoroutineState::Yielded(MaildirYield::WantsFileRead(paths))
             }
-            (State::AwaitRead, Some(MaildirReply::FileRead(mut map))) => {
+            (State::Read, Some(MaildirReply::FileRead(mut map))) => {
                 let bytes = map.remove(&self.path).unwrap_or_default();
                 let text = str::from_utf8(&bytes).unwrap_or("");
                 let table = parse_dovecot_keywords(text);
@@ -101,16 +101,16 @@ impl MaildirCoroutine for MaildirDovecotLoad {
 #[derive(Debug)]
 enum State {
     Start,
-    AwaitProbe,
-    AwaitRead,
+    Probe,
+    Read,
 }
 
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Start => f.write_str("start"),
-            Self::AwaitProbe => f.write_str("await probe reply"),
-            Self::AwaitRead => f.write_str("await read reply"),
+            Self::Probe => f.write_str("probe keywords table"),
+            Self::Read => f.write_str("read keywords table"),
         }
     }
 }

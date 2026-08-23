@@ -97,20 +97,20 @@ impl MaildirCoroutine for MaildirEntryStore {
     ) -> MaildirCoroutineState<Self::Yield, Self::Return> {
         match (&mut self.state, arg) {
             (State::Start, None) => {
-                self.state = State::AwaitTime;
+                self.state = State::ReadTime;
                 MaildirCoroutineState::Yielded(MaildirYield::WantsTime)
             }
-            (State::AwaitTime, Some(MaildirReply::Time { secs, nanos })) => {
-                self.state = State::AwaitPid { secs, nanos };
+            (State::ReadTime, Some(MaildirReply::Time { secs, nanos })) => {
+                self.state = State::ReadPid { secs, nanos };
                 MaildirCoroutineState::Yielded(MaildirYield::WantsPid)
             }
-            (State::AwaitPid { secs, nanos }, Some(MaildirReply::Pid(pid))) => {
+            (State::ReadPid { secs, nanos }, Some(MaildirReply::Pid(pid))) => {
                 let secs = *secs;
                 let nanos = *nanos;
-                self.state = State::AwaitHostname { secs, nanos, pid };
+                self.state = State::ReadHostname { secs, nanos, pid };
                 MaildirCoroutineState::Yielded(MaildirYield::WantsHostname)
             }
-            (State::AwaitHostname { secs, nanos, pid }, Some(MaildirReply::Hostname(hostname))) => {
+            (State::ReadHostname { secs, nanos, pid }, Some(MaildirReply::Hostname(hostname))) => {
                 let id = mint_id(*secs, *nanos, *pid, &hostname);
 
                 let mut final_name = id.clone();
@@ -125,7 +125,7 @@ impl MaildirCoroutine for MaildirEntryStore {
 
                 let contents = mem::take(&mut self.contents);
                 let files = BTreeMap::from_iter([(tmp_path.clone(), contents)]);
-                self.state = State::AwaitCreateTmp {
+                self.state = State::CreateTmp {
                     tmp_path,
                     final_path,
                     id,
@@ -133,7 +133,7 @@ impl MaildirCoroutine for MaildirEntryStore {
                 MaildirCoroutineState::Yielded(MaildirYield::WantsFileCreate(files))
             }
             (
-                State::AwaitCreateTmp {
+                State::CreateTmp {
                     tmp_path,
                     final_path,
                     id,
@@ -144,10 +144,10 @@ impl MaildirCoroutine for MaildirEntryStore {
                 let final_path = mem::take(final_path);
                 let id = mem::take(id);
                 let pairs = vec![(tmp_path, final_path.clone())];
-                self.state = State::AwaitRename { final_path, id };
+                self.state = State::Rename { final_path, id };
                 MaildirCoroutineState::Yielded(MaildirYield::WantsRename(pairs))
             }
-            (State::AwaitRename { final_path, id }, Some(MaildirReply::Rename)) => {
+            (State::Rename { final_path, id }, Some(MaildirReply::Rename)) => {
                 let final_path = mem::take(final_path);
                 let id = mem::take(id);
                 debug!("stored entry {id}");
@@ -168,22 +168,22 @@ impl MaildirCoroutine for MaildirEntryStore {
 #[derive(Debug)]
 enum State {
     Start,
-    AwaitTime,
-    AwaitPid {
+    ReadTime,
+    ReadPid {
         secs: u64,
         nanos: u32,
     },
-    AwaitHostname {
+    ReadHostname {
         secs: u64,
         nanos: u32,
         pid: u32,
     },
-    AwaitCreateTmp {
+    CreateTmp {
         tmp_path: MaildirFsPath,
         final_path: MaildirFsPath,
         id: String,
     },
-    AwaitRename {
+    Rename {
         final_path: MaildirFsPath,
         id: String,
     },
@@ -193,11 +193,11 @@ impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Start => f.write_str("start"),
-            Self::AwaitTime => f.write_str("await time reply"),
-            Self::AwaitPid { .. } => f.write_str("await pid reply"),
-            Self::AwaitHostname { .. } => f.write_str("await hostname reply"),
-            Self::AwaitCreateTmp { .. } => f.write_str("await tmp create reply"),
-            Self::AwaitRename { .. } => f.write_str("await rename reply"),
+            Self::ReadTime => f.write_str("read time"),
+            Self::ReadPid { .. } => f.write_str("read pid"),
+            Self::ReadHostname { .. } => f.write_str("read hostname"),
+            Self::CreateTmp { .. } => f.write_str("create tmp entry"),
+            Self::Rename { .. } => f.write_str("rename into place"),
         }
     }
 }

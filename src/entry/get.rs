@@ -64,10 +64,10 @@ impl MaildirCoroutine for MaildirEntryGet {
             (State::Locate(c), arg) => {
                 let out = maildir_try!(c, arg);
                 let paths = BTreeSet::from_iter([out.path.clone()]);
-                self.state = State::AwaitRead { path: out.path };
+                self.state = State::Read { path: out.path };
                 MaildirCoroutineState::Yielded(MaildirYield::WantsFileRead(paths))
             }
-            (State::AwaitRead { path }, Some(MaildirReply::FileRead(map))) => {
+            (State::Read { path }, Some(MaildirReply::FileRead(map))) => {
                 let path = mem::take(path);
                 let contents = map.into_values().next().unwrap_or_default();
                 debug!("got entry");
@@ -85,14 +85,14 @@ impl MaildirCoroutine for MaildirEntryGet {
 #[derive(Debug)]
 enum State {
     Locate(MaildirEntryLocate),
-    AwaitRead { path: MaildirFsPath },
+    Read { path: MaildirFsPath },
 }
 
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Locate(_) => f.write_str("locate message"),
-            Self::AwaitRead { .. } => f.write_str("await read reply"),
+            Self::Read { .. } => f.write_str("read entry"),
         }
     }
 }

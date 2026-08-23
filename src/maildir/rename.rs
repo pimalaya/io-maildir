@@ -75,10 +75,10 @@ impl MaildirCoroutine for MaildirRename {
         match (&mut self.state, arg) {
             (State::Start { pairs }, None) => {
                 let pairs = mem::take(pairs);
-                self.state = State::AwaitRename;
+                self.state = State::Rename;
                 MaildirCoroutineState::Yielded(MaildirYield::WantsRename(pairs))
             }
-            (State::AwaitRename, Some(MaildirReply::Rename)) => {
+            (State::Rename, Some(MaildirReply::Rename)) => {
                 debug!("renamed maildir");
                 MaildirCoroutineState::Complete(Ok(()))
             }
@@ -95,14 +95,14 @@ enum State {
     Start {
         pairs: Vec<(MaildirFsPath, MaildirFsPath)>,
     },
-    AwaitRename,
+    Rename,
 }
 
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Start { .. } => f.write_str("start"),
-            Self::AwaitRename => f.write_str("await rename reply"),
+            Self::Rename => f.write_str("rename maildir"),
         }
     }
 }

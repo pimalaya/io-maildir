@@ -95,7 +95,7 @@ impl MaildirCoroutine for MaildirEntryCopy {
             (State::Locate(c), arg) => {
                 let out = maildir_try!(c, arg);
                 let subdir = self.target_subdir.clone().unwrap_or(out.subdir);
-                self.state = State::AwaitTime {
+                self.state = State::ReadTime {
                     source: out.path,
                     subdir,
                     flags: out.flags,
@@ -103,14 +103,14 @@ impl MaildirCoroutine for MaildirEntryCopy {
                 MaildirCoroutineState::Yielded(MaildirYield::WantsTime)
             }
             (
-                State::AwaitTime {
+                State::ReadTime {
                     source,
                     subdir,
                     flags,
                 },
                 Some(MaildirReply::Time { secs, nanos }),
             ) => {
-                self.state = State::AwaitPid {
+                self.state = State::ReadPid {
                     source: mem::take(source),
                     subdir: subdir.clone(),
                     flags: mem::take(flags),
@@ -120,7 +120,7 @@ impl MaildirCoroutine for MaildirEntryCopy {
                 MaildirCoroutineState::Yielded(MaildirYield::WantsPid)
             }
             (
-                State::AwaitPid {
+                State::ReadPid {
                     source,
                     subdir,
                     flags,
@@ -129,7 +129,7 @@ impl MaildirCoroutine for MaildirEntryCopy {
                 },
                 Some(MaildirReply::Pid(pid)),
             ) => {
-                self.state = State::AwaitHostname {
+                self.state = State::ReadHostname {
                     source: mem::take(source),
                     subdir: subdir.clone(),
                     flags: mem::take(flags),
@@ -140,7 +140,7 @@ impl MaildirCoroutine for MaildirEntryCopy {
                 MaildirCoroutineState::Yielded(MaildirYield::WantsHostname)
             }
             (
-                State::AwaitHostname {
+                State::ReadHostname {
                     source,
                     subdir,
                     flags,
@@ -154,14 +154,14 @@ impl MaildirCoroutine for MaildirEntryCopy {
                 let tmp_path = self.target.tmp().join(&id);
                 let final_path = build_target_path(&self.target, subdir, &id, flags);
                 let pairs = vec![(mem::take(source), tmp_path.clone())];
-                self.state = State::AwaitCopy {
+                self.state = State::Copy {
                     tmp_path,
                     final_path,
                 };
                 MaildirCoroutineState::Yielded(MaildirYield::WantsCopy(pairs))
             }
             (
-                State::AwaitCopy {
+                State::Copy {
                     tmp_path,
                     final_path,
                 },
@@ -170,10 +170,10 @@ impl MaildirCoroutine for MaildirEntryCopy {
                 // NOTE: a /tmp target renames onto itself, which POSIX
                 // defines as a successful no-op, as in MaildirEntryStore.
                 let pairs = vec![(mem::take(tmp_path), mem::take(final_path))];
-                self.state = State::AwaitRename;
+                self.state = State::Rename;
                 MaildirCoroutineState::Yielded(MaildirYield::WantsRename(pairs))
             }
-            (State::AwaitRename, Some(MaildirReply::Rename)) => {
+            (State::Rename, Some(MaildirReply::Rename)) => {
                 debug!("copied entry");
                 MaildirCoroutineState::Complete(Ok(()))
             }
@@ -188,19 +188,19 @@ impl MaildirCoroutine for MaildirEntryCopy {
 #[derive(Debug)]
 enum State {
     Locate(MaildirEntryLocate),
-    AwaitTime {
+    ReadTime {
         source: MaildirFsPath,
         subdir: MaildirSubdir,
         flags: MaildirFlags,
     },
-    AwaitPid {
+    ReadPid {
         source: MaildirFsPath,
         subdir: MaildirSubdir,
         flags: MaildirFlags,
         secs: u64,
         nanos: u32,
     },
-    AwaitHostname {
+    ReadHostname {
         source: MaildirFsPath,
         subdir: MaildirSubdir,
         flags: MaildirFlags,
@@ -208,22 +208,22 @@ enum State {
         nanos: u32,
         pid: u32,
     },
-    AwaitCopy {
+    Copy {
         tmp_path: MaildirFsPath,
         final_path: MaildirFsPath,
     },
-    AwaitRename,
+    Rename,
 }
 
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Locate(_) => f.write_str("locate source"),
-            Self::AwaitTime { .. } => f.write_str("await time reply"),
-            Self::AwaitPid { .. } => f.write_str("await pid reply"),
-            Self::AwaitHostname { .. } => f.write_str("await hostname reply"),
-            Self::AwaitCopy { .. } => f.write_str("await copy reply"),
-            Self::AwaitRename => f.write_str("await rename reply"),
+            Self::ReadTime { .. } => f.write_str("read time"),
+            Self::ReadPid { .. } => f.write_str("read pid"),
+            Self::ReadHostname { .. } => f.write_str("read hostname"),
+            Self::Copy { .. } => f.write_str("copy into tmp"),
+            Self::Rename => f.write_str("rename into place"),
         }
     }
 }

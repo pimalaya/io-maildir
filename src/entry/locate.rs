@@ -89,10 +89,10 @@ impl MaildirCoroutine for MaildirEntryLocate {
                 let new_path = self.maildir.new().join(&self.id);
                 let tmp_path = self.maildir.tmp().join(&self.id);
                 let probes = BTreeSet::from_iter([new_path.clone(), tmp_path.clone()]);
-                self.state = State::AwaitProbe { new_path, tmp_path };
+                self.state = State::Probe { new_path, tmp_path };
                 MaildirCoroutineState::Yielded(MaildirYield::WantsFileExists(probes))
             }
-            (State::AwaitProbe { new_path, tmp_path }, Some(MaildirReply::FileExists(probes))) => {
+            (State::Probe { new_path, tmp_path }, Some(MaildirReply::FileExists(probes))) => {
                 if probes.get(new_path).copied().unwrap_or(false) {
                     let out = MaildirEntryLocateOutput {
                         path: mem::take(new_path),
@@ -116,10 +116,10 @@ impl MaildirCoroutine for MaildirEntryLocate {
                 }
 
                 let paths = BTreeSet::from_iter([self.maildir.cur()]);
-                self.state = State::AwaitScan;
+                self.state = State::Scan;
                 MaildirCoroutineState::Yielded(MaildirYield::WantsDirRead(paths))
             }
-            (State::AwaitScan, Some(MaildirReply::DirRead(entries))) => {
+            (State::Scan, Some(MaildirReply::DirRead(entries))) => {
                 let paths = entries.into_values().next().unwrap_or_default();
 
                 for path in paths {
@@ -156,19 +156,19 @@ impl MaildirCoroutine for MaildirEntryLocate {
 #[derive(Clone, Debug)]
 enum State {
     Start,
-    AwaitProbe {
+    Probe {
         new_path: MaildirFsPath,
         tmp_path: MaildirFsPath,
     },
-    AwaitScan,
+    Scan,
 }
 
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Start => f.write_str("start"),
-            Self::AwaitProbe { .. } => f.write_str("await probe reply"),
-            Self::AwaitScan => f.write_str("await scan reply"),
+            Self::Probe { .. } => f.write_str("probe new and tmp"),
+            Self::Scan => f.write_str("scan cur"),
         }
     }
 }

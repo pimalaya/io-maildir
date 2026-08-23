@@ -71,10 +71,10 @@ impl MaildirCoroutine for MaildirDovecotStore {
                 let path = mem::take(path);
                 let payload = mem::take(payload);
                 let files = BTreeMap::from_iter([(path, payload)]);
-                self.state = State::AwaitWrite;
+                self.state = State::Write;
                 MaildirCoroutineState::Yielded(MaildirYield::WantsFileCreate(files))
             }
-            (State::AwaitWrite, Some(MaildirReply::FileCreate)) => {
+            (State::Write, Some(MaildirReply::FileCreate)) => {
                 debug!("stored dovecot keywords");
                 MaildirCoroutineState::Complete(Ok(()))
             }
@@ -92,14 +92,14 @@ enum State {
         path: MaildirFsPath,
         payload: Vec<u8>,
     },
-    AwaitWrite,
+    Write,
 }
 
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Start { .. } => f.write_str("start"),
-            Self::AwaitWrite => f.write_str("await write reply"),
+            Self::Write => f.write_str("write keywords table"),
         }
     }
 }

@@ -60,10 +60,10 @@ impl MaildirCoroutine for MaildirEntryList {
         match (&mut self.state, arg) {
             (State::Start { maildir }, None) => {
                 let paths = BTreeSet::from_iter([maildir.new(), maildir.cur()]);
-                self.state = State::AwaitRead;
+                self.state = State::Read;
                 MaildirCoroutineState::Yielded(MaildirYield::WantsDirRead(paths))
             }
-            (State::AwaitRead, Some(MaildirReply::DirRead(entries))) => {
+            (State::Read, Some(MaildirReply::DirRead(entries))) => {
                 let mut candidates = BTreeSet::new();
 
                 for (_dir, names) in entries {
@@ -86,10 +86,10 @@ impl MaildirCoroutine for MaildirEntryList {
                 }
 
                 let probes = candidates.clone();
-                self.state = State::AwaitProbe { candidates };
+                self.state = State::Probe { candidates };
                 MaildirCoroutineState::Yielded(MaildirYield::WantsFileExists(probes))
             }
-            (State::AwaitProbe { candidates }, Some(MaildirReply::FileExists(probes))) => {
+            (State::Probe { candidates }, Some(MaildirReply::FileExists(probes))) => {
                 let confirmed: BTreeSet<MaildirEntry> = mem::take(candidates)
                     .into_iter()
                     .filter(|p| probes.get(p).copied().unwrap_or(false))
@@ -109,16 +109,16 @@ impl MaildirCoroutine for MaildirEntryList {
 #[derive(Debug)]
 enum State {
     Start { maildir: Maildir },
-    AwaitRead,
-    AwaitProbe { candidates: BTreeSet<MaildirFsPath> },
+    Read,
+    Probe { candidates: BTreeSet<MaildirFsPath> },
 }
 
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Start { .. } => f.write_str("start"),
-            Self::AwaitRead => f.write_str("await read reply"),
-            Self::AwaitProbe { .. } => f.write_str("await probe reply"),
+            Self::Read => f.write_str("read subdirs"),
+            Self::Probe { .. } => f.write_str("probe candidates"),
         }
     }
 }

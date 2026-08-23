@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `copy` leaving a truncated entry behind when the process died mid-copy. The bytes went straight to the name the destination is enumerated under, so the window between the file appearing there and its last byte arriving exposed an entry that every Maildir reader lists as an ordinary message, empty and unparsable, and that copying again does not replace. The copy now lands in the target `tmp/` and is renamed into place, as store already did, so an interrupted copy leaves at worst a stray file in `tmp/` ([himalaya#738]).
+
 ## [0.3.0] - 2026-08-16
 
 ### Added
@@ -132,6 +136,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#1]: https://github.com/pimalaya/io-maildir/issues/1
 [#3]: https://github.com/pimalaya/io-maildir/issues/3
 [#4]: https://github.com/pimalaya/io-maildir/issues/4
+[himalaya#738]: https://github.com/pimalaya/himalaya/issues/738
 
 [unreleased]: https://github.com/pimalaya/io-maildir/compare/v0.3.0..HEAD
 [0.3.0]: https://github.com/pimalaya/io-maildir/compare/v0.2.1..v0.3.0

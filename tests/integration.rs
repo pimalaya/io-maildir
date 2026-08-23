@@ -299,6 +299,13 @@ fn end_to_end() {
         copy_b.flags().contains(&MaildirFlag::Flagged),
         "copy must preserve the source flags",
     );
+    assert_eq!(
+        std::fs::read_dir(drafts.tmp().as_str())
+            .expect("read drafts tmp")
+            .count(),
+        0,
+        "copy must leave no file behind in the target tmp",
+    );
 
     // ── MOVE (inbox → drafts, entry_c) ──────────────────────────────
 

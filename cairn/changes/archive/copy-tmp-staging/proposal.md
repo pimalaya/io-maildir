@@ -1,7 +1,7 @@
 ---
 cairn: change
 id: copy-tmp-staging
-status: active
+status: landed
 created: 2026-08-23
 ---
 

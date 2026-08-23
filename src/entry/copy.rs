@@ -9,6 +9,12 @@
 //! and risking a silent overwrite of a same-named entry. The source
 //! flags are preserved.
 //!
+//! It is a delivery in the other sense too: the bytes are copied into
+//! the target `/tmp` and renamed into place, as [`MaildirEntryStore`]
+//! writes them. Nothing is ever enumerated under its final name before
+//! every byte is behind it, so a process dying mid-copy leaves at worst
+//! a stray file in `/tmp` rather than a truncated message in `/cur`.
+//!
 //! [`MaildirEntryStore`]: crate::entry::store::MaildirEntryStore
 //!
 //! # Example
@@ -145,12 +151,29 @@ impl MaildirCoroutine for MaildirEntryCopy {
                 Some(MaildirReply::Hostname(hostname)),
             ) => {
                 let id = mint_id(*secs, *nanos, *pid, &hostname);
-                let target = build_target_path(&self.target, subdir, &id, flags);
-                let pairs = vec![(mem::take(source), target)];
-                self.state = State::AwaitCopy;
+                let tmp_path = self.target.tmp().join(&id);
+                let final_path = build_target_path(&self.target, subdir, &id, flags);
+                let pairs = vec![(mem::take(source), tmp_path.clone())];
+                self.state = State::AwaitCopy {
+                    tmp_path,
+                    final_path,
+                };
                 MaildirCoroutineState::Yielded(MaildirYield::WantsCopy(pairs))
             }
-            (State::AwaitCopy, Some(MaildirReply::Copy)) => {
+            (
+                State::AwaitCopy {
+                    tmp_path,
+                    final_path,
+                },
+                Some(MaildirReply::Copy),
+            ) => {
+                // NOTE: a /tmp target renames onto itself, which POSIX
+                // defines as a successful no-op, as in MaildirEntryStore.
+                let pairs = vec![(mem::take(tmp_path), mem::take(final_path))];
+                self.state = State::AwaitRename;
+                MaildirCoroutineState::Yielded(MaildirYield::WantsRename(pairs))
+            }
+            (State::AwaitRename, Some(MaildirReply::Rename)) => {
                 debug!("copied entry");
                 MaildirCoroutineState::Complete(Ok(()))
             }
@@ -185,7 +208,11 @@ enum State {
         nanos: u32,
         pid: u32,
     },
-    AwaitCopy,
+    AwaitCopy {
+        tmp_path: MaildirFsPath,
+        final_path: MaildirFsPath,
+    },
+    AwaitRename,
 }
 
 impl fmt::Display for State {
@@ -195,7 +222,8 @@ impl fmt::Display for State {
             Self::AwaitTime { .. } => f.write_str("await time reply"),
             Self::AwaitPid { .. } => f.write_str("await pid reply"),
             Self::AwaitHostname { .. } => f.write_str("await hostname reply"),
-            Self::AwaitCopy => f.write_str("await copy reply"),
+            Self::AwaitCopy { .. } => f.write_str("await copy reply"),
+            Self::AwaitRename => f.write_str("await rename reply"),
         }
     }
 }
@@ -243,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn cur_copy_mints_fresh_id_and_preserves_flags() {
+    fn cur_copy_stages_in_tmp_mints_fresh_id_and_preserves_flags() {
         // Source carries mbsync's `,U=999` infix and `FS` flags.
         let mut cor = MaildirEntryCopy::new("1700000000.abc.host,U=999", source(), target(), None);
 
@@ -281,13 +309,24 @@ mod tests {
             MaildirCoroutineState::Yielded(MaildirYield::WantsHostname) => {}
             state => panic!("expected WantsHostname, got {state:?}"),
         }
-        match cor.resume(Some(MaildirReply::Hostname(String::from("host")))) {
+        let staged = match cor.resume(Some(MaildirReply::Hostname(String::from("host")))) {
             MaildirCoroutineState::Yielded(MaildirYield::WantsCopy(pairs)) => {
                 let (from, to) = &pairs[0];
                 assert_eq!(
                     from,
                     &MaildirFsPath::from("root/src/cur/1700000000.abc.host,U=999:2,FS")
                 );
+                // The bytes land in the target /tmp, never under the name
+                // the destination is enumerated by.
+                assert!(to.as_str().starts_with("root/dst/tmp/1."), "got {to}");
+                to.clone()
+            }
+            state => panic!("expected WantsCopy, got {state:?}"),
+        };
+        match cor.resume(Some(MaildirReply::Copy)) {
+            MaildirCoroutineState::Yielded(MaildirYield::WantsRename(pairs)) => {
+                let (from, to) = &pairs[0];
+                assert_eq!(from, &staged);
                 let to = to.as_str();
                 // Fresh id under target/cur, no `,U=999`, flags preserved.
                 assert!(to.starts_with("root/dst/cur/1."), "got {to}");
@@ -295,9 +334,9 @@ mod tests {
                 // Flags preserved; rendered in canonical (sorted) order.
                 assert!(to.ends_with(":2,SF"), "flags not preserved: {to}");
             }
-            state => panic!("expected WantsCopy, got {state:?}"),
+            state => panic!("expected WantsRename, got {state:?}"),
         }
-        match cor.resume(Some(MaildirReply::Copy)) {
+        match cor.resume(Some(MaildirReply::Rename)) {
             MaildirCoroutineState::Complete(Ok(())) => {}
             state => panic!("expected Complete(Ok), got {state:?}"),
         }

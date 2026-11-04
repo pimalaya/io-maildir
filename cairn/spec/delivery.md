@@ -47,3 +47,10 @@ Moving an entry into another Maildir SHALL be one rename from the source path to
 ### Requirement: The source of a copy is untouched
 
 Copying SHALL leave the source entry byte for byte as it was, under its own name in its own Maildir, whatever happens to the destination.
+
+### Requirement: Copy and move retain flags in a New destination
+
+Move and copy targeting `New`, explicitly or through the source subdirectory
+default, SHALL retain nonempty source flags in an informational suffix. Empty
+flags SHALL retain the plain destination basename. Existing fresh-ID, atomic
+move, tmp-staged copy and source-preservation requirements SHALL still apply.

@@ -46,11 +46,10 @@ pub enum MaildirFlagsSetError {
 
 /// Replaces the flags of a Maildir entry.
 ///
-/// An entry in `/cur` is renamed with the new flag set. One in `/new`
-/// moves to `/cur` as it gains its first flag, since a name in `/new`
-/// carries no info suffix to hold one. Setting no flag leaves it where
-/// it is, and an entry in `/tmp` is never touched, being another
-/// process's delivery in flight.
+/// Entries in `/cur` are renamed with the new flag set. A `/new` entry
+/// moves to `/cur` when its flags change to a nonempty set, and stays in
+/// `/new` under its plain logical ID when cleared. An unchanged entry
+/// and an entry in `/tmp` are left untouched.
 #[derive(Debug)]
 pub struct MaildirFlagsSet {
     maildir: Maildir,
@@ -84,17 +83,26 @@ impl MaildirCoroutine for MaildirFlagsSet {
             (State::Locate(c), arg) => {
                 let out = maildir_try!(c, arg);
 
-                match out.subdir {
+                match out.subdir.clone() {
                     MaildirSubdir::Tmp => {
                         debug!("set flags");
                         MaildirCoroutineState::Complete(Ok(()))
                     }
-                    MaildirSubdir::New if self.flags.is_empty() => {
-                        debug!("set flags");
-                        MaildirCoroutineState::Complete(Ok(()))
-                    }
                     MaildirSubdir::Cur | MaildirSubdir::New => {
-                        let new_path = cur_path_with_flags(&self.maildir, &self.id, &self.flags);
+                        if out.subdir == MaildirSubdir::New && self.flags == out.flags {
+                            debug!("set flags");
+                            return MaildirCoroutineState::Complete(Ok(()));
+                        }
+                        let id = crate::entry::MaildirEntry::from_path(out.path.clone())
+                            .id()
+                            .unwrap_or(&self.id)
+                            .to_string();
+                        let new_path = if out.subdir == MaildirSubdir::New && self.flags.is_empty()
+                        {
+                            self.maildir.new().join(&id)
+                        } else {
+                            cur_path_with_flags(&self.maildir, &id, &self.flags)
+                        };
                         let pairs = vec![(out.path, new_path)];
                         self.state = State::Rename;
                         MaildirCoroutineState::Yielded(MaildirYield::WantsRename(pairs))
@@ -209,6 +217,61 @@ mod tests {
     }
 
     #[test]
+    fn flagged_new_entry_set_empty_clears_suffix_and_stays_new() {
+        let mut cor = MaildirFlagsSet::new(maildir(), "abc", MaildirFlags::default());
+        expect_wants_file_exists(&mut cor);
+        let mut probes = BTreeMap::new();
+        probes.insert(MaildirFsPath::from("root/new/abc"), false);
+        probes.insert(MaildirFsPath::from("root/tmp/abc"), false);
+        assert!(matches!(
+            cor.resume(Some(MaildirReply::FileExists(probes))),
+            MaildirCoroutineState::Yielded(MaildirYield::WantsDirRead(_))
+        ));
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            MaildirFsPath::from("root/new"),
+            BTreeSet::from([MaildirFsPath::from("root/new/abc:2,F")]),
+        );
+        entries.insert(MaildirFsPath::from("root/cur"), BTreeSet::new());
+        assert!(matches!(
+            cor.resume(Some(MaildirReply::DirRead(entries))),
+            MaildirCoroutineState::Yielded(MaildirYield::WantsFileExists(_))
+        ));
+        let candidates = BTreeMap::from([(MaildirFsPath::from("root/new/abc:2,F"), true)]);
+        let pairs = expect_wants_rename(&mut cor, Some(MaildirReply::FileExists(candidates)));
+        assert_eq!(
+            pairs,
+            vec![("root/new/abc:2,F".into(), "root/new/abc".into())]
+        );
+    }
+
+    #[test]
+    fn full_basename_uses_logical_id_once() {
+        let mut cor = MaildirFlagsSet::new(maildir(), "abc:2,F", seen());
+        expect_wants_file_exists(&mut cor);
+        let mut probes = BTreeMap::new();
+        probes.insert(MaildirFsPath::from("root/new/abc:2,F"), false);
+        probes.insert(MaildirFsPath::from("root/tmp/abc:2,F"), false);
+        assert!(matches!(
+            cor.resume(Some(MaildirReply::FileExists(probes))),
+            MaildirCoroutineState::Yielded(MaildirYield::WantsDirRead(_))
+        ));
+        let mut entries = BTreeMap::new();
+        entries.insert(MaildirFsPath::from("root/new"), BTreeSet::new());
+        entries.insert(
+            MaildirFsPath::from("root/cur"),
+            BTreeSet::from([MaildirFsPath::from("root/cur/abc:2,F")]),
+        );
+        assert!(matches!(
+            cor.resume(Some(MaildirReply::DirRead(entries))),
+            MaildirCoroutineState::Yielded(MaildirYield::WantsFileExists(_))
+        ));
+        let candidates = BTreeMap::from([(MaildirFsPath::from("root/cur/abc:2,F"), true)]);
+        let pairs = expect_wants_rename(&mut cor, Some(MaildirReply::FileExists(candidates)));
+        assert_eq!(pairs[0].1, MaildirFsPath::from("root/cur/abc:2,S"));
+    }
+
+    #[test]
     fn tmp_subdir_returns_noop_ok() {
         let mut cor = MaildirFlagsSet::new(maildir(), "abc", seen());
 
@@ -240,7 +303,16 @@ mod tests {
         cor: &mut MaildirFlagsSet,
         arg: Option<MaildirReply>,
     ) -> Vec<(MaildirFsPath, MaildirFsPath)> {
-        match cor.resume(arg) {
+        let state = cor.resume(arg);
+        let state = match state {
+            MaildirCoroutineState::Yielded(MaildirYield::WantsFileExists(paths)) => {
+                cor.resume(Some(MaildirReply::FileExists(BTreeMap::from_iter(
+                    paths.into_iter().map(|path| (path, true)),
+                ))))
+            }
+            state => state,
+        };
+        match state {
             MaildirCoroutineState::Yielded(MaildirYield::WantsRename(pairs)) => pairs,
             state => panic!("expected WantsRename, got {state:?}"),
         }

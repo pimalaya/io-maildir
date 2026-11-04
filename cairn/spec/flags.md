@@ -30,21 +30,32 @@ Adding, removing or replacing the flags of an entry in `cur/` SHALL rename it un
 
 ### Requirement: Gaining a flag moves an entry out of new/
 
-An entry in `new/` carries no info suffix and therefore no flags. A flag write naming it whose resulting flag set is non-empty SHALL rename it to `cur/` under the same unique id, with that flag set as its info suffix. The id SHALL NOT change, so an identifier a caller stored stays valid across the move.
+Flag writes SHALL accept entries in `new/` with or without informational
+suffixes and operate on their actual parsed flags. Destination names SHALL use
+the located logical ID, including when the caller supplied a full basename. An
+unchanged resulting flag set SHALL leave a new entry untouched. A changed
+nonempty flag set SHALL move it to `cur/` with the same logical ID and resulting
+flags. Clearing its flags SHALL leave it in `new/` under the unsuffixed logical
+ID. Plain new entries whose resulting flags remain empty SHALL stay untouched.
+The existing custom-keyword and unknown-letter policies SHALL be preserved.
 
-A write whose resulting flag set is empty SHALL leave the entry in `new/`: it breaks no invariant, and moving it would mark an unread message as no longer new as a side effect of a write that changed nothing.
+#### Scenario: Adding Seen to plain new
 
-#### Scenario: A message read as seen
+- GIVEN `new/abc`
+- WHEN Seen is added
+- THEN it becomes `cur/abc:2,S` on Unix, with the same logical ID
 
-- GIVEN a message in `new/`
-- WHEN the `S` flag is added to it
-- THEN it is renamed to `cur/<id>:2,S`, `new/` no longer holds it, and it is still found under the same id
+#### Scenario: Clearing a flagged new entry
 
-#### Scenario: A flag removed from an unread message
+- GIVEN `new/abc:2,F` on Unix
+- WHEN its final flag is removed or its flag set is replaced with empty
+- THEN it becomes `new/abc` and remains discoverable as `abc`
 
-- GIVEN the same message, still in `new/`
-- WHEN a flag it does not carry is removed
-- THEN nothing is renamed and the message stays in `new/`
+#### Scenario: A complete filename used for flag updates
+
+- GIVEN `cur/abc:2,F` on Unix
+- WHEN Seen is added using the complete filename
+- THEN it becomes `cur/abc:2,SF`, without a duplicated suffix
 
 ### Requirement: A flag write never touches an entry in tmp/
 

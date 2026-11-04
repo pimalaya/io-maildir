@@ -211,7 +211,11 @@ fn build_target_path(
             let name = format!("{id}{INFORMATIONAL_SUFFIX_SEPARATOR}2,{flags}");
             target.cur().join(&name)
         }
-        MaildirSubdir::New => target.new().join(id),
+        MaildirSubdir::New if flags.is_empty() => target.new().join(id),
+        MaildirSubdir::New => {
+            let name = format!("{id}{INFORMATIONAL_SUFFIX_SEPARATOR}2,{flags}");
+            target.new().join(&name)
+        }
         MaildirSubdir::Tmp => target.tmp().join(id),
     }
 }
@@ -268,7 +272,15 @@ mod tests {
         ));
         entries.insert(MaildirFsPath::from("root/src/cur"), set);
         match cor.resume(Some(MaildirReply::DirRead(entries))) {
-            MaildirCoroutineState::Yielded(MaildirYield::WantsTime) => {}
+            MaildirCoroutineState::Yielded(MaildirYield::WantsFileExists(paths)) => {
+                assert_eq!(paths.len(), 1);
+                let mut exists = BTreeMap::new();
+                exists.insert(paths.iter().next().unwrap().clone(), true);
+                match cor.resume(Some(MaildirReply::FileExists(exists))) {
+                    MaildirCoroutineState::Yielded(MaildirYield::WantsTime) => {}
+                    state => panic!("expected WantsTime, got {state:?}"),
+                }
+            }
             state => panic!("expected WantsTime, got {state:?}"),
         }
         match cor.resume(Some(MaildirReply::Time { secs: 1, nanos: 2 })) {
@@ -298,6 +310,29 @@ mod tests {
             MaildirCoroutineState::Complete(Ok(())) => {}
             state => panic!("expected Complete(Ok), got {state:?}"),
         }
+    }
+
+    #[test]
+    fn new_move_keeps_nonempty_flags() {
+        let flags = MaildirFlags::from_iter([crate::flag::MaildirFlag::Flagged]);
+        let path = build_target_path(&target(), &MaildirSubdir::New, "fresh-id", &flags);
+        assert_eq!(
+            path,
+            MaildirFsPath::from(format!(
+                "root/dst/new/fresh-id{INFORMATIONAL_SUFFIX_SEPARATOR}2,F"
+            )),
+        );
+    }
+
+    #[test]
+    fn new_move_with_empty_flags_keeps_plain_name() {
+        let path = build_target_path(
+            &target(),
+            &MaildirSubdir::New,
+            "fresh-id",
+            &MaildirFlags::default(),
+        );
+        assert_eq!(path, MaildirFsPath::from("root/dst/new/fresh-id"));
     }
 
     fn expect_wants_file_exists(cor: &mut MaildirEntryMove) {

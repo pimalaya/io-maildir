@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed logical-ID lookup for suffixed entries in `new/` and unsafe prefix
+  matching in `cur/`. Complete basenames remain accepted; invalid path-like IDs
+  and scanned non-files are rejected.
+- Preserved flags when moving or copying flagged `new/` entries into `new/`,
+  and fixed flag updates to use the located logical ID and actual flags without
+  duplicating informational suffixes.
+
 ## [0.3.1] - 2026-08-23
 
 ### Fixed

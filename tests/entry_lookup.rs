@@ -266,7 +266,7 @@ fn prefix_failures_do_not_mutate_any_message_or_destination() {
 }
 
 #[test]
-fn exact_copy_and_move_keep_flagged_new_entries_in_new() {
+fn exact_copy_and_move_find_flagged_new_entries() {
     let (_dir, client, source) = fixture();
     let target_root = source.path().as_str().to_owned() + "/target";
     for subdir in ["new", "cur", "tmp"] {
@@ -290,14 +290,7 @@ fn exact_copy_and_move_keep_flagged_new_entries_in_new() {
         fs::read(copied.iter().next().unwrap().path().as_str()).unwrap(),
         b"selected source"
     );
-    assert!(
-        copied
-            .iter()
-            .next()
-            .unwrap()
-            .flags()
-            .contains(&MaildirFlag::Flagged)
-    );
+    assert!(copied.iter().next().unwrap().flags().is_empty());
     assert!(Path::new(&(source.path().as_str().to_owned() + "/new/" + &name)).exists());
 
     client
@@ -310,11 +303,7 @@ fn exact_copy_and_move_keep_flagged_new_entries_in_new() {
         .unwrap();
     let moved = client.list_entries(target.clone()).unwrap();
     assert_eq!(moved.len(), 2);
-    assert!(
-        moved
-            .iter()
-            .all(|entry| entry.flags().contains(&MaildirFlag::Flagged))
-    );
+    assert!(moved.iter().all(|entry| entry.flags().is_empty()));
     assert!(!Path::new(&(source.path().as_str().to_owned() + "/new/" + &name)).exists());
 
     let explicit_copy = format!("explicit-copy{INFORMATIONAL_SUFFIX_SEPARATOR}2,F");
@@ -340,18 +329,15 @@ fn exact_copy_and_move_keep_flagged_new_entries_in_new() {
         .unwrap();
     let final_entries = client.list_entries(target.clone()).unwrap();
     assert_eq!(final_entries.len(), 4);
+    let flagged = final_entries
+        .iter()
+        .filter(|entry| entry.flags().contains(&MaildirFlag::Flagged));
     assert!(
-        final_entries
-            .iter()
-            .all(|entry| entry.flags().contains(&MaildirFlag::Flagged))
+        flagged
+            .clone()
+            .all(|entry| entry.path().as_str().contains("/cur/"))
     );
-    assert_eq!(
-        final_entries
-            .iter()
-            .filter(|entry| entry.path().as_str().contains("/cur/"))
-            .count(),
-        2
-    );
+    assert_eq!(flagged.count(), 2);
     assert!(Path::new(&(source.path().as_str().to_owned() + "/new/" + &explicit_copy)).exists());
     assert!(!Path::new(&(source.path().as_str().to_owned() + "/new/" + &explicit_move)).exists());
 }

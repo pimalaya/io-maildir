@@ -3,23 +3,21 @@ cairn: delta
 change: exact-entry-lookup
 ---
 
+# Delta
+
 ## ADDED Requirements
 
 Capability: entry-lookup.
 
 ### Requirement: Locate an exact logical ID or complete basename
 
-Lookup SHALL accept equality with an entry's parsed logical ID or its complete
-basename, never an arbitrary prefix. It SHALL resolve suffixed entries in both
-`new/` and `cur/`, returning the actual path, source subdirectory, and flags
-parsed from that path. Lookup and reading SHALL NOT rename entries or change
-their bytes or flags. Parsing SHALL use the existing platform separator rules.
+Lookup SHALL accept an entry's parsed logical ID or its complete basename, never an arbitrary prefix. It SHALL resolve suffixed entries in both `new/` and `cur/`, returning the actual path, source subdirectory and the flags parsed from that path. Lookup and reading SHALL NOT rename an entry or change its bytes or flags.
 
 #### Scenario: Suffixed new entry listed by logical ID
 
-- GIVEN `new/abc,U=5:2,F` on Unix, or the platform-equivalent suffix
-- WHEN listing's logical ID `abc,U=5` is located
-- THEN the selected path is the suffixed new entry and its flags include F
+- GIVEN `new/abc,U=5:2,` on Unix, or the platform-equivalent suffix
+- WHEN the logical ID `abc,U=5` that listing returns is located
+- THEN the selected path is the suffixed new entry and its flags are empty
 
 #### Scenario: Overlapping IDs
 
@@ -30,58 +28,40 @@ their bytes or flags. Parsing SHALL use the existing platform separator rules.
 
 ### Requirement: Lookup priority and candidate eligibility
 
-Lookup SHALL first accept an exact file in `new/`, then an exact file in
-`tmp/`. On probe misses it SHALL inspect `new/`, then `cur/`, choosing the
-lexicographically first matching confirmed file within that directory. This
-priority SHALL also resolve duplicate logical IDs. It SHALL NOT scan `tmp/`.
-Scanned dotfiles and non-files SHALL be ignored. Empty, dot-prefixed,
-NUL-containing or platform path-separated input SHALL return NotFound before
-I/O. `/` is rejected on every platform; `\` is rejected on Windows and remains
-a valid Unix basename character. Windows drive/stream colon syntax SHALL
-likewise be rejected.
+Lookup SHALL first accept an exact file in `new/`, then an exact file in `tmp/`. On a miss it SHALL scan `new/`, then `cur/`, choosing the lexicographically first confirmed file within each, which also settles duplicate logical IDs. It SHALL NOT scan `tmp/`, and SHALL skip dotfiles and non-files.
 
-### Requirement: Copy and move retain flags in a New destination
-
-Capability: delivery.
-
-Move and copy targeting `New`, explicitly or through the source subdirectory
-default, SHALL retain nonempty source flags in an informational suffix. Empty
-flags SHALL retain the plain destination basename. Existing fresh-ID, atomic
-move, tmp-staged copy, and source-preservation requirements SHALL still apply.
+Empty, dot-prefixed, NUL-containing or path-separated input SHALL return NotFound before any I/O: `/` on every platform, `\` and the drive or stream colon on Windows only, `\` staying a valid Unix basename character.
 
 ## MODIFIED Requirements
 
-Capability: flags. Replace the existing requirement with the same title.
+Capability: flags.
 
 ### Requirement: Gaining a flag moves an entry out of new/
 
-Flag writes SHALL accept entries in `new/` with or without informational
-suffixes and operate on their actual parsed flags. Destination names SHALL
-use the located logical ID, including when the caller supplied a full basename.
-An unchanged resulting flag set SHALL leave a new entry untouched. A changed
-nonempty flag set SHALL move it to `cur/` with the same logical ID and resulting
-flags. Clearing its flags SHALL leave it in `new/` under the unsuffixed logical
-ID. Plain new entries whose resulting flags remain empty SHALL stay untouched.
-The existing custom-keyword and unknown-letter policies SHALL be preserved.
+An entry io-maildir writes into `new/` carries no info suffix and therefore no flags; one left there with a suffix by another client is read with the flags it carries. A flag write naming an entry in `new/` whose flag set changes and stays non-empty SHALL rename it to `cur/` under the same unique id, with that flag set as its info suffix. The id SHALL NOT change, so an identifier a caller stored stays valid across the move.
 
-#### Scenario: Adding Seen to plain new
+A write whose resulting flag set is unchanged SHALL leave the entry in `new/`: moving it would mark an unread message as no longer new as a side effect of a write that changed nothing. A write clearing the flags of a suffixed entry in `new/` SHALL rename it to its bare id there. The destination name SHALL be built from the located id, never from the caller's input, so a complete file name never doubles the suffix.
 
-- GIVEN `new/abc`
-- WHEN Seen is added
-- THEN it becomes `cur/abc:2,S` on Unix, with the same logical ID
+#### Scenario: A message read as seen
 
-#### Scenario: Clearing a flagged new entry
+- GIVEN a message in `new/`
+- WHEN the `S` flag is added to it
+- THEN it is renamed to `cur/<id>:2,S`, `new/` no longer holds it, and it is still found under the same id
 
-- GIVEN `new/abc:2,F` on Unix
-- WHEN its final flag is removed or its flag set is replaced with empty
-- THEN it becomes `new/abc` and remains discoverable as `abc`
+#### Scenario: A flag removed from an unread message
 
-#### Scenario: A complete filename used for flag updates
+- GIVEN the same message, still in `new/`
+- WHEN a flag it does not carry is removed
+- THEN nothing is renamed and the message stays in `new/`
+
+#### Scenario: Clearing a suffixed entry in new/
+
+- GIVEN `new/abc:2,F` on Unix, left by another client
+- WHEN its last flag is removed
+- THEN it becomes `new/abc` and is still found as `abc`
+
+#### Scenario: A complete file name used for a flag write
 
 - GIVEN `cur/abc:2,F` on Unix
-- WHEN Seen is added using the complete filename
-- THEN it becomes `cur/abc:2,SF`, without a duplicated suffix
-
-## REMOVED Requirements
-
-None.
+- WHEN `F` is removed using the complete file name `abc:2,F`
+- THEN it becomes `cur/abc:2,`, the suffix written once

@@ -184,7 +184,7 @@ mod tests {
         let pairs = expect_wants_rename(&mut cor, Some(MaildirReply::DirRead(entries)));
         let (from, to) = &pairs[0];
         assert_eq!(from, &MaildirFsPath::from("root/cur/abc:2,F"));
-        assert_eq!(to, &MaildirFsPath::from("root/cur/abc:2,SF"));
+        assert_eq!(to, &MaildirFsPath::from("root/cur/abc:2,FS"));
 
         expect_complete_ok(&mut cor, Some(MaildirReply::Rename));
     }
@@ -249,7 +249,7 @@ mod tests {
         );
         assert_eq!(
             pairs,
-            vec![("root/new/abc:2,F".into(), "root/cur/abc:2,SF".into())]
+            vec![("root/new/abc:2,F".into(), "root/cur/abc:2,FS".into())]
         );
     }
 
@@ -306,7 +306,7 @@ mod tests {
         let mut candidates = BTreeMap::new();
         candidates.insert(MaildirFsPath::from("root/cur/abc:2,F"), true);
         let pairs = expect_wants_rename(&mut cor, Some(MaildirReply::FileExists(candidates)));
-        assert_eq!(pairs[0].1, MaildirFsPath::from("root/cur/abc:2,SF"));
+        assert_eq!(pairs[0].1, MaildirFsPath::from("root/cur/abc:2,FS"));
     }
 
     #[test]

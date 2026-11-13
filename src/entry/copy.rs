@@ -32,7 +32,7 @@
 
 use core::{fmt, mem};
 
-use alloc::string::ToString;
+use alloc::string::{String, ToString};
 
 use log::debug;
 use thiserror::Error;
@@ -57,8 +57,8 @@ pub enum MaildirEntryCopyError {
     Locate(#[from] MaildirEntryLocateError),
 }
 
-/// Copies a Maildir entry into `target`; `None` target_subdir keeps
-/// the source subdir.
+/// Copies a Maildir entry into `target`, returning the id the copy
+/// got; `None` target_subdir keeps the source subdir.
 #[derive(Debug)]
 pub struct MaildirEntryCopy {
     target: Maildir,
@@ -85,7 +85,7 @@ impl MaildirEntryCopy {
 
 impl MaildirCoroutine for MaildirEntryCopy {
     type Yield = MaildirYield;
-    type Return = Result<(), MaildirEntryCopyError>;
+    type Return = Result<String, MaildirEntryCopyError>;
 
     fn resume(
         &mut self,
@@ -155,6 +155,7 @@ impl MaildirCoroutine for MaildirEntryCopy {
                 let final_path = build_target_path(&self.target, subdir, &id, flags);
                 let pairs = vec![(mem::take(source), tmp_path.clone())];
                 self.state = State::Copy {
+                    id,
                     tmp_path,
                     final_path,
                 };
@@ -162,6 +163,7 @@ impl MaildirCoroutine for MaildirEntryCopy {
             }
             (
                 State::Copy {
+                    id,
                     tmp_path,
                     final_path,
                 },
@@ -170,12 +172,12 @@ impl MaildirCoroutine for MaildirEntryCopy {
                 // NOTE: a /tmp target renames onto itself, which POSIX
                 // defines as a successful no-op, as in MaildirEntryStore.
                 let pairs = vec![(mem::take(tmp_path), mem::take(final_path))];
-                self.state = State::Rename;
+                self.state = State::Rename { id: mem::take(id) };
                 MaildirCoroutineState::Yielded(MaildirYield::WantsRename(pairs))
             }
-            (State::Rename, Some(MaildirReply::Rename)) => {
-                debug!("copied entry");
-                MaildirCoroutineState::Complete(Ok(()))
+            (State::Rename { id }, Some(MaildirReply::Rename)) => {
+                debug!("copied entry as {id}");
+                MaildirCoroutineState::Complete(Ok(mem::take(id)))
             }
             (_, arg) => {
                 let err = MaildirEntryCopyError::UnexpectedArg(arg);
@@ -209,10 +211,13 @@ enum State {
         pid: u32,
     },
     Copy {
+        id: String,
         tmp_path: MaildirFsPath,
         final_path: MaildirFsPath,
     },
-    Rename,
+    Rename {
+        id: String,
+    },
 }
 
 impl fmt::Display for State {
@@ -223,7 +228,7 @@ impl fmt::Display for State {
             Self::ReadPid { .. } => f.write_str("read pid"),
             Self::ReadHostname { .. } => f.write_str("read hostname"),
             Self::Copy { .. } => f.write_str("copy into tmp"),
-            Self::Rename => f.write_str("rename into place"),
+            Self::Rename { .. } => f.write_str("rename into place"),
         }
     }
 }
@@ -340,12 +345,12 @@ mod tests {
                 assert!(to.starts_with("root/dst/cur/1."), "got {to}");
                 assert!(!to.contains(",U=999"), "carried foreign UID: {to}");
                 // Flags preserved; rendered in canonical (sorted) order.
-                assert!(to.ends_with(":2,SF"), "flags not preserved: {to}");
+                assert!(to.ends_with(":2,FS"), "flags not preserved: {to}");
             }
             state => panic!("expected WantsRename, got {state:?}"),
         }
         match cor.resume(Some(MaildirReply::Rename)) {
-            MaildirCoroutineState::Complete(Ok(())) => {}
+            MaildirCoroutineState::Complete(Ok(id)) => assert!(id.starts_with("1."), "got {id}"),
             state => panic!("expected Complete(Ok), got {state:?}"),
         }
     }

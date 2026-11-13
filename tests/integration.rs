@@ -264,7 +264,7 @@ fn end_to_end() {
 
     // A copy is a fresh delivery into the target: it mints a brand-new
     // unique name (never reuses the source basename) and preserves flags.
-    client
+    let copy_id = client
         .copy(
             &id_b,
             inbox.clone(),
@@ -272,6 +272,10 @@ fn end_to_end() {
             Some(MaildirSubdir::Cur),
         )
         .expect("copy entry_b to drafts");
+    assert_ne!(copy_id, id_b);
+    client
+        .locate(drafts.clone(), &copy_id)
+        .expect("the copy is found by the id it got");
 
     assert_eq!(
         client.list_entries(inbox.clone()).unwrap().len(),

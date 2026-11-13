@@ -10,7 +10,7 @@ How an entry enters a Maildir: the unique name it is given, and the steps a read
 
 ### Requirement: A unique name minted per delivery
 
-Every entry entering a Maildir SHALL be given a name minted from the current time, a per-process counter, the process id and the hostname. An entry delivered from another Maildir SHALL NOT reuse the source basename: a name carries folder-specific metadata baked into it by other tools, such as mbsync's `,U=<uid>` infix, which is valid only in the folder that wrote it and would corrupt the destination's sync state or silently overwrite a same-named entry there.
+Every entry entering a Maildir SHALL be given a name minted from the current time, a per-process counter, the process id and the hostname. An entry delivered from another Maildir SHALL NOT reuse the source basename: a name carries folder-specific metadata baked into it by other tools, such as mbsync's `,U=<uid>` infix, which is valid only in the folder that wrote it and would corrupt the destination's sync state or silently overwrite a same-named entry there. A copy SHALL return the id it minted, so the caller can name the delivered entry.
 
 #### Scenario: A copy of an mbsync entry
 

@@ -163,7 +163,7 @@ fn full_basename_reads_and_flagged_new_entries_keep_their_identity() {
     assert!(updated_flags.contains(&MaildirFlag::Flagged));
     assert_eq!(
         updated.file_name(),
-        Some(format!("full-id{sep}2,SF").as_str())
+        Some(format!("full-id{sep}2,FS").as_str())
     );
 
     let listed = client.list_entries(maildir.clone()).unwrap();

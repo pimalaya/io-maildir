@@ -575,14 +575,15 @@ impl MaildirClient {
         Ok((id, path))
     }
 
-    /// Runs [`MaildirEntryCopy`] from `source` to `target`.
+    /// Runs [`MaildirEntryCopy`] from `source` to `target`, returning
+    /// the id the copy got.
     pub fn copy(
         &self,
         id: impl ToString,
         source: Maildir,
         target: Maildir,
         target_subdir: Option<MaildirSubdir>,
-    ) -> Result<(), MaildirClientError> {
+    ) -> Result<String, MaildirClientError> {
         self.run(MaildirEntryCopy::new(id, source, target, target_subdir))
     }
 

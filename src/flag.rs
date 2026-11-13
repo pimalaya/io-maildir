@@ -245,6 +245,12 @@ impl FromIterator<MaildirFlag> for MaildirFlags {
 /// A single Maildir flag: a standard IANA letter or a custom keyword.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum MaildirFlag {
+    // NOTE: declared in the ASCII order of their letters, the order the
+    // Maildir spec requires on disk and the derived `Ord` yields.
+    /// The message is a draft (`D`).
+    Draft,
+    /// The message is flagged for later attention (`F`).
+    Flagged,
     /// The message has been forwarded (`P`).
     Passed,
     /// The message has been replied to (`R`).
@@ -253,10 +259,6 @@ pub enum MaildirFlag {
     Seen,
     /// The message is marked for deletion (`T`).
     Trashed,
-    /// The message is a draft (`D`).
-    Draft,
-    /// The message is flagged for later attention (`F`).
-    Flagged,
     /// Custom keyword with no info-section letter; serialised via
     /// dovecot-keywords or a configured header.
     Keyword(String),
@@ -382,8 +384,7 @@ mod tests {
             None,
         );
 
-        // NOTE: written in variant order, not in filename order.
-        assert_eq!(flags.to_string(), "RSF");
+        assert_eq!(flags.to_string(), "FRS");
         assert!(keywords(&flags).is_empty());
     }
 

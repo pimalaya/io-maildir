@@ -298,7 +298,7 @@ mod tests {
                 assert!(to.starts_with("root/dst/cur/1."), "got {to}");
                 assert!(!to.contains(",U=999"), "carried foreign UID: {to}");
                 // Flags preserved; rendered in canonical (sorted) order.
-                assert!(to.ends_with(":2,SF"), "flags not preserved: {to}");
+                assert!(to.ends_with(":2,FS"), "flags not preserved: {to}");
             }
             state => panic!("expected WantsRename, got {state:?}"),
         }

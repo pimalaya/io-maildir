@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `MaildirClient::copy` and the `MaildirEntryCopy` coroutine return the id minted for the copy instead of `()`.
+
 ### Fixed
+
+- Fixed listing a store failing with `Not a directory` on any plain file beside its folders, such as `dovecot-uidlist` or the `dovecot-keywords` file io-maildir writes itself.
+
+- Fixed the info section letters written out of ASCII order.
+
+  A flagged and seen entry was renamed `:2,SF` instead of `:2,FS`, which the Maildir spec forbids and some readers compare literally.
 
 - Fixed an entry id selecting another message by prefix.
 

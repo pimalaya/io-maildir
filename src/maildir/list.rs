@@ -137,7 +137,11 @@ impl MaildirCoroutine for MaildirList {
                     markers.insert(cand.join(NEW), cand.clone());
                     markers.insert(cand.join(TMP), cand.clone());
                 }
-                let probes: BTreeSet<MaildirFsPath> = markers.keys().cloned().collect();
+                // NOTE: a store holds plain files beside its folders
+                // (dovecot-uidlist, dovecot-keywords), so a child is
+                // probed before it is read as a directory.
+                let mut probes: BTreeSet<MaildirFsPath> = markers.keys().cloned().collect();
+                probes.extend(next_pending.iter().cloned());
 
                 self.state = State::Probe {
                     markers,
@@ -155,7 +159,8 @@ impl MaildirCoroutine for MaildirList {
                 Some(MaildirReply::DirExists(probes)),
             ) => {
                 let markers = mem::take(markers);
-                let next_pending = mem::take(next_pending);
+                let mut next_pending = mem::take(next_pending);
+                next_pending.retain(|path| probes.get(path).copied().unwrap_or(false));
                 let mut found = mem::take(found);
 
                 let mut hits: BTreeMap<MaildirFsPath, u8> = BTreeMap::new();
@@ -324,6 +329,35 @@ mod tests {
         let probes = expect_wants_dir_exists(&mut cor, Some(MaildirReply::DirRead(entries)));
         assert!(!probes.iter().any(|p| p.as_str().contains(".Hidden")));
         assert!(probes.iter().any(|p| p.as_str().contains("Sent")));
+    }
+
+    #[test]
+    fn fs_reads_only_the_children_that_are_directories() {
+        let mut cor = MaildirList::new(&fs_store());
+        expect_wants_dir_read(&mut cor, None);
+
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            MaildirFsPath::from("root"),
+            BTreeSet::from_iter([
+                MaildirFsPath::from("root/Foo"),
+                MaildirFsPath::from("root/dovecot-uidlist"),
+            ]),
+        );
+
+        let probes = expect_wants_dir_exists(&mut cor, Some(MaildirReply::DirRead(entries)));
+        assert!(probes.contains(&MaildirFsPath::from("root/dovecot-uidlist")));
+
+        let reply = probes
+            .into_iter()
+            .map(|p| {
+                let dir = !p.as_str().contains("dovecot-uidlist");
+                (p, dir)
+            })
+            .collect();
+
+        let next = expect_wants_dir_read(&mut cor, Some(MaildirReply::DirExists(reply)));
+        assert_eq!(next, BTreeSet::from_iter([MaildirFsPath::from("root/Foo")]));
     }
 
     #[test]

@@ -48,8 +48,9 @@
 //! [`coroutine::MaildirCoroutineState`]: either a yield or the
 //! terminal result. The shared yield is [`coroutine::MaildirYield`],
 //! mixing filesystem requests (create, read, exists, rename, copy,
-//! remove) with the three environment inputs the delivery protocol
-//! needs to mint message identifiers (time, pid, hostname). The driver
+//! remove, sync) with the four environment inputs the delivery protocol
+//! needs to mint message identifiers (time, pid, counter, hostname), so
+//! the core keeps no state and carries no target-specific code. The driver
 //! answers each yield with the matching [`coroutine::MaildirReply`] on
 //! the next resume. The [`maildir_try!`] macro is the coroutine
 //! equivalent of `?`.

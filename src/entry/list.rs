@@ -95,7 +95,7 @@ impl MaildirCoroutine for MaildirEntryList {
 
                     match kind {
                         MaildirFileKind::File => {
-                            found.insert(MaildirEntry::from_path(path));
+                            found.insert(self.maildir.entry(path));
                         }
                         MaildirFileKind::Missing => gone = true,
                         MaildirFileKind::Dir | MaildirFileKind::Other => {}

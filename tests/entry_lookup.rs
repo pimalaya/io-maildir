@@ -4,7 +4,6 @@ use std::{fs, path::Path};
 
 use io_maildir::{
     client::MaildirClient,
-    entry::INFORMATIONAL_SUFFIX_SEPARATOR,
     entry::{copy::MaildirEntryCopy, r#move::MaildirEntryMove},
     flag::{MaildirFlag, MaildirFlags},
     maildir::{Maildir, MaildirSubdir},
@@ -54,7 +53,7 @@ fn listed_plain_and_suffixed_entries_round_trip_without_mutation() {
     let new_suffixed = b"Subject: suffixed\r\n\r\nnew suffixed";
     let cur_plain = b"Subject: current\r\n\r\ncur plain";
     let cur_suffixed = b"Subject: flagged\r\n\r\ncur flagged";
-    let sep = INFORMATIONAL_SUFFIX_SEPARATOR;
+    let sep = maildir.separator;
     put(&maildir, "new", "plain", new_plain);
     put(&maildir, "new", &format!("abc,U=5{sep}2,"), new_suffixed);
     put(&maildir, "cur", "cur-id", cur_plain);
@@ -135,7 +134,7 @@ fn matching_directory_is_not_a_message_file() {
 #[test]
 fn full_basename_reads_and_flagged_new_entries_keep_their_identity() {
     let (_dir, client, maildir) = fixture();
-    let sep = INFORMATIONAL_SUFFIX_SEPARATOR;
+    let sep = maildir.separator;
     put(
         &maildir,
         "cur",
@@ -273,7 +272,8 @@ fn exact_copy_and_move_find_flagged_new_entries() {
         fs::create_dir_all(format!("{target_root}/{subdir}")).unwrap();
     }
     let target = Maildir::from_path(MaildirFsPath::new(target_root));
-    let name = format!("chosen{INFORMATIONAL_SUFFIX_SEPARATOR}2,F");
+    let sep = source.separator;
+    let name = format!("chosen{sep}2,F");
     put(&source, "new", &name, b"selected source");
 
     client
@@ -306,7 +306,7 @@ fn exact_copy_and_move_find_flagged_new_entries() {
     assert!(moved.iter().all(|entry| entry.flags().is_empty()));
     assert!(!Path::new(&(source.path().as_str().to_owned() + "/new/" + &name)).exists());
 
-    let explicit_copy = format!("explicit-copy{INFORMATIONAL_SUFFIX_SEPARATOR}2,F");
+    let explicit_copy = format!("explicit-copy{sep}2,F");
     put(&source, "new", &explicit_copy, b"explicit copy");
     client
         .run(MaildirEntryCopy::new(
@@ -317,7 +317,7 @@ fn exact_copy_and_move_find_flagged_new_entries() {
         ))
         .unwrap();
 
-    let explicit_move = format!("explicit-move{INFORMATIONAL_SUFFIX_SEPARATOR}2,F");
+    let explicit_move = format!("explicit-move{sep}2,F");
     put(&source, "new", &explicit_move, b"explicit move");
     client
         .run(MaildirEntryMove::new(

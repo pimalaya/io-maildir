@@ -63,7 +63,7 @@ fn many_ids_are_located_at_once() {
     fs::write(root.join("tmp/3.host"), b"\r\n").unwrap();
 
     let ids = ["1.host", "2.host", "2.host:2,FS", "3.host", "4.host"];
-    let found = client.locate_entries(maildir, ids).unwrap();
+    let found = client.locate_many(maildir, ids).unwrap();
 
     let ids: Vec<&str> = found.keys().map(String::as_str).collect();
     assert_eq!(ids, ["1.host", "2.host", "2.host:2,FS", "3.host"]);

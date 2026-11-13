@@ -9,7 +9,9 @@ use alloc::{
 use std::{
     fs, io,
     path::{Path, PathBuf},
-    process, thread,
+    process,
+    sync::atomic::{AtomicU32, Ordering},
+    thread,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -25,7 +27,7 @@ use crate::{
         utils::{allocate_keyword_slot, keyword_slot},
     },
     entry::{
-        INFORMATIONAL_SUFFIX_SEPARATOR, MaildirEntry, MaildirFullEntry,
+        MaildirEntry, MaildirFullEntry,
         copy::*,
         get::*,
         headers::{inject_header, strip_headers},
@@ -35,11 +37,19 @@ use crate::{
         r#move::*,
         store::*,
     },
-    flag::{KeywordHeader, MaildirFlags, add::*, is_valid_keyword, remove::*, set::*},
-    maildir::{CUR, Maildir, MaildirSubdir, NEW, TMP, create::*, delete::*, list::*, rename::*},
+    flag::{
+        KeywordHeader, MaildirFlags, add::*, info_letters, is_valid_keyword, remove::*, set::*,
+    },
+    maildir::{
+        CUR, Maildir, MaildirSubdir, NEW, SEPARATOR, TMP, create::*, delete::*, list::*, rename::*,
+    },
     path::{MaildirFsPath, MaildirPath},
     store::MaildirStore,
 };
+
+/// The count of [`MaildirYield::WantsCounter`] requests answered by this
+/// process, every client included, so no two get the same number.
+static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 /// Errors returned by the [`MaildirClient`] helpers.
 #[derive(Debug, Error)]
@@ -89,9 +99,9 @@ pub enum MaildirClientError {
     /// The entry-locate coroutine failed.
     #[error(transparent)]
     EntryLocate(#[from] MaildirEntryLocateError),
-    /// The entries-locate coroutine failed.
+    /// The entry-locate-many coroutine failed.
     #[error(transparent)]
-    EntriesLocate(#[from] MaildirEntriesLocateError),
+    EntryLocateMany(#[from] MaildirEntryLocateManyError),
     /// The entry-list coroutine failed.
     #[error(transparent)]
     EntryList(#[from] MaildirEntryListError),
@@ -131,11 +141,15 @@ pub struct MaildirClient {
 impl MaildirClient {
     /// Builds a client rooted at `root` in fs layout without filesystem
     /// checks. Flip `client.store.maildirpp = true` for Maildir++.
+    ///
+    /// The info separator of the store is the colon, and `;` on Windows,
+    /// whose filesystems reserve the colon.
     pub fn new(root: impl Into<MaildirFsPath>) -> Self {
         Self {
             store: MaildirStore {
                 root: root.into(),
                 maildirpp: false,
+                separator: if cfg!(windows) { ';' } else { SEPARATOR },
             },
             dovecot_keywords: false,
             keywords_header: None,
@@ -280,6 +294,9 @@ impl MaildirClient {
                 }
             }
             MaildirYield::WantsPid => MaildirReply::Pid(process::id()),
+            MaildirYield::WantsCounter => {
+                MaildirReply::Counter(COUNTER.fetch_add(1, Ordering::Relaxed))
+            }
             MaildirYield::WantsHostname => {
                 let hostname = gethostname().into_string().unwrap_or_default();
                 MaildirReply::Hostname(hostname)
@@ -342,7 +359,10 @@ impl MaildirClient {
             }
         }
 
-        Ok(Maildir::from_path(root))
+        let mut maildir = Maildir::from_path(root);
+        maildir.separator = self.store.separator;
+
+        Ok(maildir)
     }
 }
 
@@ -461,15 +481,15 @@ impl MaildirClient {
         Ok((path, subdir, flags))
     }
 
-    /// Runs [`MaildirEntriesLocate`] for `ids` in `maildir`: one read of
-    /// the Maildir whatever their number, the ids naming no entry left
-    /// out.
-    pub fn locate_entries(
+    /// Runs [`MaildirEntryLocateMany`] for `ids` in `maildir`: one read
+    /// of the Maildir whatever their number, the ids naming no entry
+    /// left out.
+    pub fn locate_many(
         &self,
         maildir: Maildir,
         ids: impl IntoIterator<Item = impl ToString>,
     ) -> Result<BTreeMap<String, MaildirEntryLocateOutput>, MaildirClientError> {
-        self.run(MaildirEntriesLocate::new(maildir, ids))
+        self.run(MaildirEntryLocateMany::new(maildir, ids))
     }
 
     /// Runs [`MaildirEntryGet`] for `id` in `maildir`; resolves the
@@ -750,13 +770,14 @@ impl MaildirClient {
         }
 
         let (path, subdir, _) = self.locate(source.clone(), id)?;
+        let entry = source.entry(path);
         let lands_in_cur = *target_subdir.unwrap_or(&subdir) == MaildirSubdir::Cur;
-        if !lands_in_cur || !has_keyword_letters(&path) {
+        if !lands_in_cur || !has_keyword_letters(&entry) {
             return Ok(None);
         }
 
         let table = self.keyword_table(source);
-        let mut flags = MaildirFlags::with_dovecot(&path, &table);
+        let mut flags = MaildirFlags::with_dovecot(&entry, &table);
         let keywords = flags.drain_keywords();
 
         flags.extend_keywords(keywords.iter().cloned());
@@ -783,11 +804,12 @@ impl MaildirClient {
         };
 
         let (path, _, _) = self.locate(target.clone(), id)?;
-        if !has_keyword_letters(&path) {
+        let entry = target.entry(path);
+        if !has_keyword_letters(&entry) {
             return Ok(());
         }
 
-        let mut flags: MaildirFlags = MaildirFlags::from(&path).iter().cloned().collect();
+        let mut flags: MaildirFlags = entry.flags().iter().cloned().collect();
         flags.extend_keywords(keywords);
         self.set_flags(target.clone(), id, flags)
     }
@@ -810,7 +832,7 @@ impl MaildirClient {
             strip_headers(&contents, &names)
         };
 
-        let mut entry = MaildirFullEntry::from((path.clone(), contents));
+        let mut entry = MaildirFullEntry::from((entry.clone(), contents));
         self.resolve_entry_keywords(&mut entry, table);
 
         Ok(entry)
@@ -820,7 +842,7 @@ impl MaildirClient {
     /// through `table` and [`Self::keywords_header`].
     fn resolve_entry_keywords(&self, entry: &mut MaildirFullEntry, table: &BTreeMap<char, String>) {
         entry.flags =
-            MaildirFlags::with_keywords(&entry.path, &entry.contents, table, self.keywords_header);
+            MaildirFlags::with_keywords(&entry.entry, &entry.contents, table, self.keywords_header);
     }
 
     /// Dovecot slot table of `maildir`, empty when
@@ -1044,11 +1066,10 @@ fn read_folder(
     names
 }
 
-/// Returns `true` when the entry at `path` carries a dovecot keyword
-/// letter, a lowercase one in its `2,` info section.
-fn has_keyword_letters(path: &MaildirFsPath) -> bool {
-    path.file_name()
-        .and_then(|name| name.rsplit_once(INFORMATIONAL_SUFFIX_SEPARATOR))
-        .and_then(|(_, info)| info.strip_prefix("2,"))
+/// Returns `true` when `entry` carries a dovecot keyword letter, a
+/// lowercase one in its `2,` info section.
+fn has_keyword_letters(entry: &MaildirEntry) -> bool {
+    let name = entry.path().file_name();
+    name.and_then(|name| info_letters(name, entry.separator))
         .is_some_and(|letters| letters.chars().any(|c| c.is_ascii_lowercase()))
 }

@@ -157,6 +157,7 @@ mod tests {
         MaildirStore {
             root: MaildirFsPath::from("root"),
             maildirpp: false,
+            separator: ':',
         }
     }
 
@@ -164,6 +165,7 @@ mod tests {
         MaildirStore {
             root: MaildirFsPath::from("root"),
             maildirpp: true,
+            separator: ':',
         }
     }
 

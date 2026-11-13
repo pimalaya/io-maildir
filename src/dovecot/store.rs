@@ -135,11 +135,29 @@ impl MaildirCoroutine for MaildirDovecotStore {
                 },
                 Some(MaildirReply::Pid(pid)),
             ) => {
-                self.state = State::ReadHostname {
+                self.state = State::ReadCounter {
                     payload: mem::take(payload),
                     secs: *secs,
                     nanos: *nanos,
                     pid,
+                };
+                MaildirCoroutineState::Yielded(MaildirYield::WantsCounter)
+            }
+            (
+                State::ReadCounter {
+                    payload,
+                    secs,
+                    nanos,
+                    pid,
+                },
+                Some(MaildirReply::Counter(counter)),
+            ) => {
+                self.state = State::ReadHostname {
+                    payload: mem::take(payload),
+                    secs: *secs,
+                    nanos: *nanos,
+                    pid: *pid,
+                    counter,
                 };
                 MaildirCoroutineState::Yielded(MaildirYield::WantsHostname)
             }
@@ -149,10 +167,12 @@ impl MaildirCoroutine for MaildirDovecotStore {
                     secs,
                     nanos,
                     pid,
+                    counter,
                 },
                 Some(MaildirReply::Hostname(hostname)),
             ) => {
-                let id = mint_id(*secs, *nanos, *pid, &hostname);
+                let separator = self.maildir.separator;
+                let id = mint_id(*secs, *nanos, *pid, *counter, &hostname, separator);
                 let tmp_path = self.maildir.tmp().join(&id);
                 let files = BTreeMap::from([(tmp_path.clone(), mem::take(payload))]);
                 self.state = State::CreateTmp { tmp_path };
@@ -199,11 +219,18 @@ enum State {
         secs: u64,
         nanos: u32,
     },
+    ReadCounter {
+        payload: Vec<u8>,
+        secs: u64,
+        nanos: u32,
+        pid: u32,
+    },
     ReadHostname {
         payload: Vec<u8>,
         secs: u64,
         nanos: u32,
         pid: u32,
+        counter: u32,
     },
     CreateTmp {
         tmp_path: MaildirFsPath,
@@ -223,6 +250,7 @@ impl fmt::Display for State {
             Self::Read => f.write_str("read keywords table"),
             Self::ReadTime { .. } => f.write_str("read time"),
             Self::ReadPid { .. } => f.write_str("read pid"),
+            Self::ReadCounter { .. } => f.write_str("read counter"),
             Self::ReadHostname { .. } => f.write_str("read hostname"),
             Self::CreateTmp { .. } => f.write_str("create tmp keywords table"),
             Self::SyncTmp { .. } => f.write_str("sync tmp keywords table"),
@@ -287,11 +315,12 @@ mod tests {
                 }
                 MaildirYield::WantsTime => MaildirReply::Time { secs: 1, nanos: 2 },
                 MaildirYield::WantsPid => MaildirReply::Pid(3),
+                MaildirYield::WantsCounter => MaildirReply::Counter(4),
                 MaildirYield::WantsHostname => MaildirReply::Hostname(String::from("host")),
                 MaildirYield::WantsFileCreate(files) => {
                     steps.push("create");
                     let (path, bytes) = files.into_iter().next().unwrap();
-                    assert!(path.as_str().starts_with("root/tmp/1."), "got {path}");
+                    assert_eq!(path, MaildirFsPath::from("root/tmp/1.#4M2P3.host"));
                     tmp = path;
                     written = bytes;
                     MaildirReply::FileCreate

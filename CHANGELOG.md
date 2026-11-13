@@ -35,7 +35,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `MaildirEntryLocate` probes `cur/<id>` along with `new/<id>` and `tmp/<id>`, so a complete basename costs one request and an exact name wins over a scanned one.
 
+- `MaildirEntryStore`, `MaildirEntryCopy`, `MaildirEntryMove` and `MaildirDovecotStore` yield `WantsCounter`, the core holding no counter of its own.
+
+  A driver other than `MaildirClient` has to answer it with `MaildirReply::Counter`, a number it gives once per process.
+
+- `MaildirFlags` is read from a `MaildirEntry`, which carries its separator, instead of a path: `From<&MaildirEntry>`, `MaildirFlags::with_dovecot` and `MaildirFlags::with_keywords`.
+
+- `MaildirFullEntry` is built from a `MaildirEntry` and its bytes instead of a path and its bytes.
+
+- `MaildirClient::new` sets the separator of its store: `;` on Windows, the colon elsewhere.
+
+### Removed
+
+- `INFORMATIONAL_SUFFIX_SEPARATOR`, fixed at compile time, in favour of `MaildirStore::separator`.
+
 ### Added
+
+- `MaildirStore::separator`, the character opening the info section of the entries of a store, the colon by default.
+
+- `Maildir::separator` and `MaildirEntry::separator`, carrying it to the names written and read.
+
+- `Maildir::entry`, the handle of an entry read with the separator of its Maildir.
+
+- `SEPARATOR`, the default separator.
+
+- `MaildirYield::WantsCounter` and `MaildirReply::Counter`, asking the driver for a number unique in its process.
 
 - `MaildirClient::skip_sync`, acknowledging the sync requests without flushing.
 
@@ -43,9 +67,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `MaildirFileKind`, the kind of a directory entry: file, directory, other or gone while read.
 
-- I/O-free `MaildirEntriesLocate` coroutine, locating many entries from one read of the Maildir.
+- I/O-free `MaildirEntryLocateMany` coroutine, locating many entries from one read of the Maildir.
 
-- `MaildirClient::locate_entries`, running it.
+- `MaildirClient::locate_many`, running it.
 
 - `MaildirEntryListError::Unstable`, failing a listing whose every read held a name gone meanwhile.
 
@@ -72,6 +96,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MaildirClient::read_readable_entries`, reading a batch of entries while skipping, with a warning, the ones that cannot be read.
 
 ### Fixed
+
+- Fixed the core building for Unix and Windows only: it carries no target-specific code and no process-wide state.
+
+- Fixed a Maildir kept with another info separator read with every flag ignored and every flag write refused: the separator is an option of the store.
+
+- Fixed a store kept off the colon taking a backslash in a folder name or an entry id, a path separator on the filesystems such a store lives on.
 
 - Fixed a listing silently leaving out an entry renamed while it ran.
 

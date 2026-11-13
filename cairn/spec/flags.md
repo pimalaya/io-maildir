@@ -18,6 +18,24 @@ Flags SHALL be carried as letters following the `:2,` marker of the entry filena
 - WHEN its flags are read
 - THEN only the letters after the marker are read as flags
 
+### Requirement: The info separator belongs to the store
+
+The character opening the info section SHALL be the `separator` of the `MaildirStore`, the colon unless set otherwise, and every `Maildir` and `MaildirEntry` coming from a store SHALL carry it. Names SHALL be written and split with that character alone, whatever the platform the crate was built for: the core holds no target-specific code, so it builds for any target, and a store kept with `;` or `!` on a filesystem reserving the colon is read the same everywhere. A handle built by hand (`Maildir::from_path`, `MaildirEntry::from_path`) SHALL take the colon. `MaildirClient::new` SHALL set `;` on Windows and the colon elsewhere.
+
+A store whose separator is not the colon sits on a filesystem that reserves the colon and takes the backslash as a path separator. In such a store an entry id holding `\` or `:` SHALL be refused as NotFound before any I/O, and a folder name holding `\` SHALL be refused with `NotAFolder`.
+
+#### Scenario: A store kept with a semicolon
+
+- GIVEN a store whose separator is `;`
+- WHEN a seen message is stored, listed, flagged and copied
+- THEN it is named `<id>;2,S` then `<id>;2,FS`, listed under `<id>` with its flags, and its copy is named `<copy>;2,FS`
+
+#### Scenario: A foreign separator
+
+- GIVEN `cur/1.host;2,S` in a store whose separator is the colon
+- WHEN it is listed
+- THEN its id is `1.host;2,S` and it carries no flag
+
 ### Requirement: A flag write on an entry in cur/ is a rename in place
 
 Adding, removing or replacing the flags of an entry in `cur/` SHALL rename it under the same unique name with a rewritten info suffix. An add or a remove SHALL preserve the dovecot slot letters standing for custom keywords, and any letter the crate does not name, so it never erases what it did not address. A replace SHALL write the given set alone: every letter the entry carried and the set does not name is dropped, slot letters included, which is how a replace removes a keyword and how a copy renames its letters.

@@ -20,7 +20,7 @@ use alloc::string::String;
 
 use thiserror::Error;
 
-use crate::path::MaildirFsPath;
+use crate::{entry::MaildirEntry, path::MaildirFsPath};
 
 /// Failure causes when validating a Maildir on disk.
 #[derive(Clone, Debug, Error)]
@@ -43,6 +43,8 @@ pub const CUR: &str = "cur";
 pub const NEW: &str = "new";
 /// Name of the `tmp` subdirectory, holding entries mid-delivery.
 pub const TMP: &str = "tmp";
+/// Default character between the id of an entry and its info section.
+pub const SEPARATOR: char = ':';
 
 /// One of the three Maildir subdirectories: cur, new, tmp.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -82,17 +84,33 @@ impl fmt::Display for MaildirSubdir {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Maildir {
     root: MaildirFsPath,
+    /// Character between the id of an entry and its `2,<flags>` info
+    /// section, the one of the store this Maildir belongs to.
+    pub separator: char,
 }
 
 impl Maildir {
-    /// Wraps `root` without checking that the subdirectories exist.
+    /// Wraps `root` without checking that the subdirectories exist, its
+    /// info separator the colon.
     pub fn from_path(root: impl Into<MaildirFsPath>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            separator: SEPARATOR,
+        }
     }
 
     /// Returns the filesystem path of the Maildir root.
     pub fn path(&self) -> &MaildirFsPath {
         &self.root
+    }
+
+    /// Returns the handle of the entry at `path`, read with the info
+    /// separator of this Maildir.
+    pub fn entry(&self, path: impl Into<MaildirFsPath>) -> MaildirEntry {
+        MaildirEntry {
+            path: path.into(),
+            separator: self.separator,
+        }
     }
 
     /// Returns the final component of the root path, if any.
@@ -142,18 +160,18 @@ impl AsRef<MaildirFsPath> for Maildir {
 
 impl From<MaildirFsPath> for Maildir {
     fn from(root: MaildirFsPath) -> Self {
-        Self { root }
+        Self::from_path(root)
     }
 }
 
 impl From<String> for Maildir {
     fn from(root: String) -> Self {
-        Self { root: root.into() }
+        Self::from_path(root)
     }
 }
 
 impl From<&str> for Maildir {
     fn from(root: &str) -> Self {
-        Self { root: root.into() }
+        Self::from_path(root)
     }
 }

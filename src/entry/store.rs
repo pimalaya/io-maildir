@@ -34,7 +34,7 @@ use thiserror::Error;
 
 use crate::{
     coroutine::*,
-    entry::{INFORMATIONAL_SUFFIX_SEPARATOR, mint_id},
+    entry::mint_id,
     flag::MaildirFlags,
     maildir::{Maildir, MaildirSubdir},
     path::MaildirFsPath,
@@ -107,15 +107,33 @@ impl MaildirCoroutine for MaildirEntryStore {
             (State::ReadPid { secs, nanos }, Some(MaildirReply::Pid(pid))) => {
                 let secs = *secs;
                 let nanos = *nanos;
-                self.state = State::ReadHostname { secs, nanos, pid };
+                self.state = State::ReadCounter { secs, nanos, pid };
+                MaildirCoroutineState::Yielded(MaildirYield::WantsCounter)
+            }
+            (State::ReadCounter { secs, nanos, pid }, Some(MaildirReply::Counter(counter))) => {
+                self.state = State::ReadHostname {
+                    secs: *secs,
+                    nanos: *nanos,
+                    pid: *pid,
+                    counter,
+                };
                 MaildirCoroutineState::Yielded(MaildirYield::WantsHostname)
             }
-            (State::ReadHostname { secs, nanos, pid }, Some(MaildirReply::Hostname(hostname))) => {
-                let id = mint_id(*secs, *nanos, *pid, &hostname);
+            (
+                State::ReadHostname {
+                    secs,
+                    nanos,
+                    pid,
+                    counter,
+                },
+                Some(MaildirReply::Hostname(hostname)),
+            ) => {
+                let separator = self.maildir.separator;
+                let id = mint_id(*secs, *nanos, *pid, *counter, &hostname, separator);
 
                 let mut final_name = id.clone();
                 if matches!(self.subdir, MaildirSubdir::Cur) {
-                    final_name.push(INFORMATIONAL_SUFFIX_SEPARATOR);
+                    final_name.push(separator);
                     final_name.push_str("2,");
                     final_name.push_str(&self.flags.to_string());
                 }
@@ -197,10 +215,16 @@ enum State {
         secs: u64,
         nanos: u32,
     },
+    ReadCounter {
+        secs: u64,
+        nanos: u32,
+        pid: u32,
+    },
     ReadHostname {
         secs: u64,
         nanos: u32,
         pid: u32,
+        counter: u32,
     },
     CreateTmp {
         tmp_path: MaildirFsPath,
@@ -228,6 +252,7 @@ impl fmt::Display for State {
             Self::Start => f.write_str("start"),
             Self::ReadTime => f.write_str("read time"),
             Self::ReadPid { .. } => f.write_str("read pid"),
+            Self::ReadCounter { .. } => f.write_str("read counter"),
             Self::ReadHostname { .. } => f.write_str("read hostname"),
             Self::CreateTmp { .. } => f.write_str("create tmp entry"),
             Self::SyncTmp { .. } => f.write_str("sync tmp entry"),
@@ -263,6 +288,10 @@ mod tests {
             state => panic!("expected WantsPid, got {state:?}"),
         }
         match cor.resume(Some(MaildirReply::Pid(3))) {
+            MaildirCoroutineState::Yielded(MaildirYield::WantsCounter) => {}
+            state => panic!("expected WantsCounter, got {state:?}"),
+        }
+        match cor.resume(Some(MaildirReply::Counter(4))) {
             MaildirCoroutineState::Yielded(MaildirYield::WantsHostname) => {}
             state => panic!("expected WantsHostname, got {state:?}"),
         }
@@ -272,7 +301,7 @@ mod tests {
             }
             state => panic!("expected WantsFileCreate, got {state:?}"),
         };
-        assert!(tmp.as_str().starts_with("root/tmp/1."), "got {tmp}");
+        assert_eq!(tmp, MaildirFsPath::from("root/tmp/1.#4M2P3.host"));
         match cor.resume(Some(MaildirReply::FileCreate)) {
             MaildirCoroutineState::Yielded(MaildirYield::WantsFileSync(paths)) => {
                 assert_eq!(paths, BTreeSet::from([tmp.clone()]));
@@ -298,6 +327,59 @@ mod tests {
             }
             state => panic!("expected Complete(Ok), got {state:?}"),
         }
+    }
+
+    /// Stores a seen entry in `maildir` from the host `hostname`, every
+    /// other answer fixed, returning the name it was given.
+    fn store(maildir: Maildir, hostname: &str) -> String {
+        let seen = MaildirFlags::from_iter([crate::flag::MaildirFlag::Seen]);
+        let mut cor = MaildirEntryStore::new(maildir, MaildirSubdir::Cur, seen, Vec::new());
+        let mut arg = None;
+
+        loop {
+            arg = Some(match cor.resume(arg.take()) {
+                MaildirCoroutineState::Complete(out) => {
+                    return out.unwrap().path.file_name().unwrap().to_string();
+                }
+                MaildirCoroutineState::Yielded(wants) => match wants {
+                    MaildirYield::WantsTime => MaildirReply::Time { secs: 1, nanos: 2 },
+                    MaildirYield::WantsPid => MaildirReply::Pid(3),
+                    MaildirYield::WantsCounter => MaildirReply::Counter(4),
+                    MaildirYield::WantsHostname => MaildirReply::Hostname(hostname.to_string()),
+                    MaildirYield::WantsFileCreate(_) => MaildirReply::FileCreate,
+                    MaildirYield::WantsFileSync(_) => MaildirReply::FileSync,
+                    MaildirYield::WantsRename(_) => MaildirReply::Rename,
+                    MaildirYield::WantsDirSync(_) => MaildirReply::DirSync,
+                    wants => panic!("unexpected {wants:?}"),
+                },
+            });
+        }
+    }
+
+    #[test]
+    fn the_name_is_made_of_the_answers_alone() {
+        assert_eq!(store(maildir(), "host"), "1.#4M2P3.host:2,S");
+        assert_eq!(store(maildir(), "host"), "1.#4M2P3.host:2,S");
+    }
+
+    #[test]
+    fn the_name_takes_the_separator_of_its_maildir() {
+        let mut maildir = maildir();
+        maildir.separator = ';';
+
+        assert_eq!(store(maildir, "host"), "1.#4M2P3.host;2,S");
+    }
+
+    #[test]
+    fn a_hostname_adds_no_path_segment_nor_info_section_to_the_name() {
+        let name = store(maildir(), "mail/host:25\0x");
+        assert_eq!(name, "1.#4M2P3.mail\\057host\\07225\\000x:2,S");
+
+        let mut maildir = maildir();
+        maildir.separator = ';';
+
+        let name = store(maildir, "mail/host:25\0x;y\\z");
+        assert_eq!(name, "1.#4M2P3.mail_host_25_x_y_z;2,S");
     }
 
     #[test]

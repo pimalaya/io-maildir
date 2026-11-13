@@ -29,7 +29,7 @@ use thiserror::Error;
 
 use crate::{
     coroutine::*,
-    entry::{INFORMATIONAL_SUFFIX_SEPARATOR, MAX_DIR_READS},
+    entry::{MAX_DIR_READS, is_reserved},
     flag::MaildirFlags,
     maildir::{Maildir, MaildirSubdir},
     path::MaildirFsPath,
@@ -109,7 +109,7 @@ impl MaildirCoroutine for MaildirEntryLocate {
     ) -> MaildirCoroutineState<Self::Yield, Self::Return> {
         match (&mut self.state, arg) {
             (State::Start, None) => {
-                if !is_entry_name(&self.id) {
+                if !is_entry_name(&self.id, self.maildir.separator) {
                     return MaildirCoroutineState::Complete(Err(
                         MaildirEntryLocateError::NotFound(self.id.clone()),
                     ));
@@ -123,11 +123,11 @@ impl MaildirCoroutine for MaildirEntryLocate {
                 let found = exact.find(|(path, _)| probes.get(path).copied().unwrap_or(false));
 
                 if let Some((path, subdir)) = found {
-                    let flags = MaildirFlags::from(&path);
+                    let entry = self.maildir.entry(path);
                     let out = MaildirEntryLocateOutput {
-                        path,
+                        flags: entry.flags(),
+                        path: entry.into(),
                         subdir,
-                        flags,
                     };
                     debug!("located entry");
                     trace!("path: {}", out.path);
@@ -179,10 +179,11 @@ impl fmt::Display for State {
     }
 }
 
-/// Returns `true` when `id` can name an entry: not empty, not hidden and
-/// holding no NUL nor path separator.
-pub(crate) fn is_entry_name(id: &str) -> bool {
-    let reserved = |c| c == '\0' || c == '/' || (cfg!(windows) && (c == '\\' || c == ':'));
+/// Returns `true` when `id` can name an entry of a Maildir whose info
+/// separator is `separator`: not empty, not hidden and holding no
+/// reserved character.
+pub(crate) fn is_entry_name(id: &str, separator: char) -> bool {
+    let reserved = |c| is_reserved(c, separator);
     !id.is_empty() && !id.starts_with('.') && !id.contains(reserved)
 }
 
@@ -217,7 +218,7 @@ pub(crate) fn scan(
                 continue;
             };
 
-            let logical = match name.rsplit_once(INFORMATIONAL_SUFFIX_SEPARATOR) {
+            let logical = match name.rsplit_once(maildir.separator) {
                 Some((id, _)) if subdir != MaildirSubdir::Tmp => ids.get(id),
                 _ => None,
             };
@@ -241,11 +242,11 @@ pub(crate) fn scan(
     }
 
     let found = best.into_iter().map(|(id, (_, path, subdir))| {
-        let flags = MaildirFlags::from(&path);
+        let entry = maildir.entry(path);
         let out = MaildirEntryLocateOutput {
-            path,
+            flags: entry.flags(),
+            path: entry.into(),
             subdir,
-            flags,
         };
         (id.clone(), out)
     });
@@ -384,20 +385,21 @@ mod tests {
                 MaildirCoroutineState::Complete(Err(MaildirEntryLocateError::NotFound(_)))
             ));
         }
-        if cfg!(windows) {
-            for id in ["a\\b", "a:b"] {
-                let mut cor = MaildirEntryLocate::new(maildir(), id);
-                assert!(matches!(
-                    cor.resume(None),
-                    MaildirCoroutineState::Complete(Err(MaildirEntryLocateError::NotFound(_)))
-                ));
-            }
+
+        let mut maildir = maildir();
+        maildir.separator = ';';
+
+        for id in ["a\\b", "a:b"] {
+            let mut cor = MaildirEntryLocate::new(maildir.clone(), id);
+            assert!(matches!(
+                cor.resume(None),
+                MaildirCoroutineState::Complete(Err(MaildirEntryLocateError::NotFound(_)))
+            ));
         }
     }
 
-    #[cfg(unix)]
     #[test]
-    fn unix_backslash_is_a_valid_basename() {
+    fn a_backslash_is_a_valid_basename_on_the_colon() {
         let id = "a\\b";
         let mut cor = MaildirEntryLocate::new(maildir(), id);
         let _ = expect_wants_file_exists(&mut cor);

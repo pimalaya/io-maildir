@@ -1,6 +1,5 @@
-//! Maildir entries: the [`MaildirEntry`] lightweight handle, the
-//! [`MaildirFullEntry`] body-carrying entry and the platform-specific
-//! [`INFORMATIONAL_SUFFIX_SEPARATOR`].
+//! Maildir entries: the [`MaildirEntry`] lightweight handle and the
+//! [`MaildirFullEntry`] body-carrying entry.
 //!
 //! The I/O-free coroutines for the delivery protocol and the entry
 //! lifecycle (store, get, list, locate, copy, move) live in the
@@ -17,55 +16,53 @@ pub mod r#move;
 pub mod store;
 
 use core::{
+    fmt::Write as _,
     hash::{Hash, Hasher},
-    sync::atomic::{AtomicU32, Ordering},
 };
 
 use alloc::{string::String, vec::Vec};
 
-use crate::{flag::MaildirFlags, path::MaildirFsPath};
-
-/// Character separating the entry id from its `2,<flags>` info
-/// section in a filename.
-///
-/// A colon on Unix; a semicolon on Windows, where the colon is
-/// reserved.
-#[cfg(unix)]
-pub static INFORMATIONAL_SUFFIX_SEPARATOR: char = ':';
-/// Character separating the entry id from its `2,<flags>` info
-/// section in a filename.
-///
-/// A colon on Unix; a semicolon on Windows, where the colon is
-/// reserved.
-#[cfg(windows)]
-pub static INFORMATIONAL_SUFFIX_SEPARATOR: char = ';';
+use crate::{flag::MaildirFlags, maildir::SEPARATOR, path::MaildirFsPath};
 
 /// How many times the subdirectories are read while a name they list
 /// turns out gone, before a listing or a lookup gives up.
 pub(crate) const MAX_DIR_READS: u8 = 3;
 
-/// Process-wide counter disambiguating ids minted within the same
-/// clock tick. Shared by every delivery site (store, copy, move) so
-/// two deliveries into the same Maildir can never collide.
-static ID_COUNTER: AtomicU32 = AtomicU32::new(0);
+/// Returns `true` when no file name of a Maildir whose info separator
+/// is `separator` can hold `c`: NUL and `/` anywhere, and `\` and `:`
+/// too off the colon, such a Maildir sitting on a filesystem that
+/// reserves them.
+pub(crate) fn is_reserved(c: char, separator: char) -> bool {
+    matches!(c, '\0' | '/') || (separator != SEPARATOR && matches!(c, '\\' | ':'))
+}
 
-/// Mints a fresh Maildir unique name following the delivery
-/// convention: `{secs}.#{counter:x}M{nanos}P{pid}.{hostname}`, the `/`,
-/// `:` and NUL of the hostname written `\057`, `\072` and `\000`.
+/// Mints a Maildir unique name following the delivery convention:
+/// `{secs}.#{counter:x}M{nanos}P{pid}.{hostname}`.
+///
+/// A character of the hostname the name cannot hold, the separator
+/// included, is written in octal (`\057` for `/`, `\072` for `:`), or
+/// `_` off the colon, where the backslash is reserved too.
 ///
 /// Used by the store, copy and move coroutines so a relocated entry
 /// never reuses the source basename, which may carry foreign,
 /// folder-specific metadata such as mbsync's `,U=<uid>` infix.
-pub(crate) fn mint_id(secs: u64, nanos: u32, pid: u32, hostname: &str) -> String {
-    let counter = ID_COUNTER.fetch_add(1, Ordering::AcqRel);
+pub(crate) fn mint_id(
+    secs: u64,
+    nanos: u32,
+    pid: u32,
+    counter: u32,
+    hostname: &str,
+    separator: char,
+) -> String {
     let mut id = format!("{secs}.#{counter:x}M{nanos}P{pid}.");
 
     for c in hostname.chars() {
-        match c {
-            '/' => id.push_str("\\057"),
-            ':' => id.push_str("\\072"),
-            '\0' => id.push_str("\\000"),
-            c => id.push(c),
+        if c != separator && !is_reserved(c, separator) {
+            id.push(c);
+        } else if separator == SEPARATOR {
+            let _ = write!(id, "\\{:03o}", c as u32);
+        } else {
+            id.push('_');
         }
     }
 
@@ -75,7 +72,7 @@ pub(crate) fn mint_id(secs: u64, nanos: u32, pid: u32, hostname: &str) -> String
 /// A Maildir entry: on-disk path, body bytes and flags.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct MaildirFullEntry {
-    pub(crate) path: MaildirFsPath,
+    pub(crate) entry: MaildirEntry,
     pub(crate) contents: Vec<u8>,
     pub(crate) flags: MaildirFlags,
 }
@@ -83,7 +80,7 @@ pub struct MaildirFullEntry {
 impl MaildirFullEntry {
     /// Returns the on-disk path of the entry file.
     pub fn path(&self) -> &MaildirFsPath {
-        &self.path
+        &self.entry.path
     }
 
     /// Returns the flags of the entry.
@@ -99,14 +96,7 @@ impl MaildirFullEntry {
     /// Returns the entry id (filename before the info-section
     /// separator).
     pub fn id(&self) -> Option<&str> {
-        let file_name = self.path.file_name()?;
-
-        let id = match file_name.rsplit_once(INFORMATIONAL_SUFFIX_SEPARATOR) {
-            Some((id, _)) => id,
-            None => file_name,
-        };
-
-        Some(id)
+        self.entry.id()
     }
 
     /// Returns the raw body bytes.
@@ -135,11 +125,11 @@ impl From<MaildirFullEntry> for Vec<u8> {
     }
 }
 
-impl From<(MaildirFsPath, Vec<u8>)> for MaildirFullEntry {
-    fn from((path, contents): (MaildirFsPath, Vec<u8>)) -> Self {
-        let flags = MaildirFlags::from(&path);
+impl From<(MaildirEntry, Vec<u8>)> for MaildirFullEntry {
+    fn from((entry, contents): (MaildirEntry, Vec<u8>)) -> Self {
+        let flags = entry.flags();
         Self {
-            path,
+            entry,
             contents,
             flags,
         }
@@ -148,20 +138,28 @@ impl From<(MaildirFsPath, Vec<u8>)> for MaildirFullEntry {
 
 impl Hash for MaildirFullEntry {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.path.hash(state);
+        self.entry.path.hash(state);
     }
 }
 
 /// Lightweight handle to a Maildir entry file (path only, no body).
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct MaildirEntry {
-    path: MaildirFsPath,
+    pub(crate) path: MaildirFsPath,
+    /// Character between the id and the info section of the file name.
+    pub separator: char,
 }
 
 impl MaildirEntry {
-    /// Wraps `path` as an entry handle.
+    /// Wraps `path` as an entry handle, its info separator the colon.
+    ///
+    /// [`Maildir::entry`](crate::maildir::Maildir::entry) gives the
+    /// handle of an entry in a Maildir with another one.
     pub fn from_path(path: impl Into<MaildirFsPath>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            separator: SEPARATOR,
+        }
     }
 
     /// Returns the on-disk path of the entry file.
@@ -169,22 +167,20 @@ impl MaildirEntry {
         &self.path
     }
 
-    /// Returns the entry id (filename before the `:2,` flags
+    /// Returns the entry id (filename before the info-section
     /// separator).
     pub fn id(&self) -> Option<&str> {
         let file_name = self.path.file_name()?;
 
-        Some(
-            match file_name.rsplit_once(INFORMATIONAL_SUFFIX_SEPARATOR) {
-                Some((id, _)) => id,
-                None => file_name,
-            },
-        )
+        Some(match file_name.rsplit_once(self.separator) {
+            Some((id, _)) => id,
+            None => file_name,
+        })
     }
 
     /// Parses the flags encoded in the filename.
     pub fn flags(&self) -> MaildirFlags {
-        MaildirFlags::from(&self.path)
+        MaildirFlags::from(self)
     }
 }
 
@@ -197,17 +193,5 @@ impl From<MaildirFsPath> for MaildirEntry {
 impl From<MaildirEntry> for MaildirFsPath {
     fn from(entry: MaildirEntry) -> Self {
         entry.path
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::entry::mint_id;
-
-    #[test]
-    fn a_hostname_adds_no_path_segment_nor_info_section_to_the_id() {
-        let id = mint_id(1, 2, 3, "mail/host:25\0x");
-        let (_, hostname) = id.split_once("P3.").unwrap();
-        assert_eq!(hostname, "mail\\057host\\07225\\000x");
     }
 }

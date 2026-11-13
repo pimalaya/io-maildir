@@ -37,7 +37,7 @@ fn dovecot_keywords(client: &MaildirClient, maildir: &Maildir, id: &str) -> Vec<
     let table = client
         .load_dovecot_keywords(maildir)
         .expect("load dovecot table");
-    MaildirFlags::with_dovecot(&path, &table)
+    MaildirFlags::with_dovecot(&maildir.entry(path), &table)
         .iter()
         .filter_map(|f| f.as_keyword().map(str::to_string))
         .collect()
@@ -82,7 +82,7 @@ fn add_flag_preserves_dovecot_keyword() {
         .expect("add Seen");
 
     let (path, _, _) = client.locate(inbox.clone(), &id).expect("locate after add");
-    let named = MaildirFlags::from(&path);
+    let named = inbox.entry(path).flags();
     assert!(
         named.contains(&MaildirFlag::Seen),
         "Seen must be present after add_flags",
@@ -231,7 +231,7 @@ fn keyword_with_separator_is_dropped_not_corrupted() {
 /// before the info section, so it is never a flag.
 #[test]
 fn size_extensions_are_not_flags() {
-    let no_info = MaildirFsPath::new("/x/new/1614632942.M123P456.host,S=1234,W=1256");
+    let no_info = MaildirEntry::from_path("/x/new/1614632942.M123P456.host,S=1234,W=1256");
     let flags = MaildirFlags::from(&no_info);
     assert!(
         flags.is_empty(),
@@ -239,10 +239,10 @@ fn size_extensions_are_not_flags() {
         flags.to_string(),
     );
 
-    let no_comma = MaildirFsPath::new("/x/new/1614632942.M123P456.host");
+    let no_comma = MaildirEntry::from_path("/x/new/1614632942.M123P456.host");
     assert!(MaildirFlags::from(&no_comma).is_empty());
 
-    let with_info = MaildirFsPath::new("/x/cur/1614632942.M123P456.host,S=1234,W=1256:2,Sa");
+    let with_info = MaildirEntry::from_path("/x/cur/1614632942.M123P456.host,S=1234,W=1256:2,Sa");
     let flags = MaildirFlags::from(&with_info);
     assert!(flags.contains(&MaildirFlag::Seen), "Seen must parse");
     assert_eq!(
@@ -258,14 +258,14 @@ fn size_extensions_are_not_flags() {
 fn size_extensions_do_not_resolve_as_dovecot_keywords() {
     let table = BTreeMap::from([('a', "NonJunk".to_string()), ('w', "Work".to_string())]);
 
-    let no_info = MaildirFsPath::new("/x/new/1614632942.M123P456.host,a");
+    let no_info = MaildirEntry::from_path("/x/new/1614632942.M123P456.host,a");
     let resolved = MaildirFlags::with_dovecot(&no_info, &table);
     assert!(
         resolved.is_empty(),
         "no info section means no keywords, got {resolved:?}",
     );
 
-    let with_info = MaildirFsPath::new("/x/cur/1614632942.M123P456.host:2,Sa");
+    let with_info = MaildirEntry::from_path("/x/cur/1614632942.M123P456.host:2,Sa");
     let resolved: Vec<String> = MaildirFlags::with_dovecot(&with_info, &table)
         .iter()
         .filter_map(|f| f.as_keyword().map(str::to_string))

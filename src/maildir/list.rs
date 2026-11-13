@@ -51,6 +51,7 @@ pub enum MaildirListError {
 pub struct MaildirList {
     state: State,
     maildirpp: bool,
+    separator: char,
 }
 
 impl MaildirList {
@@ -62,6 +63,7 @@ impl MaildirList {
                 root: store.root.clone(),
             },
             maildirpp: store.maildirpp,
+            separator: store.separator,
         }
     }
 }
@@ -172,7 +174,11 @@ impl MaildirCoroutine for MaildirList {
 
                 for (candidate, count) in hits {
                     if count == 3 {
-                        found.insert(Maildir::from_path(candidate));
+                        let separator = self.separator;
+                        found.insert(Maildir {
+                            root: candidate,
+                            separator,
+                        });
                     }
                 }
 
@@ -231,6 +237,7 @@ mod tests {
         MaildirStore {
             root: MaildirFsPath::from("root"),
             maildirpp: false,
+            separator: ':',
         }
     }
 
@@ -238,6 +245,7 @@ mod tests {
         MaildirStore {
             root: MaildirFsPath::from("root"),
             maildirpp: true,
+            separator: ':',
         }
     }
 

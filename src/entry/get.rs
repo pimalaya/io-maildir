@@ -40,6 +40,7 @@ pub enum MaildirEntryGetError {
 /// Locates a Maildir entry by ID and reads its contents.
 #[derive(Debug)]
 pub struct MaildirEntryGet {
+    maildir: Maildir,
     state: State,
 }
 
@@ -47,7 +48,8 @@ impl MaildirEntryGet {
     /// Builds a coroutine fetching the Maildir entry with the given ID.
     pub fn new(maildir: Maildir, id: impl ToString) -> Self {
         Self {
-            state: State::Locate(MaildirEntryLocate::new(maildir, id)),
+            state: State::Locate(MaildirEntryLocate::new(maildir.clone(), id)),
+            maildir,
         }
     }
 }
@@ -72,7 +74,8 @@ impl MaildirCoroutine for MaildirEntryGet {
                 let contents = map.into_values().next().unwrap_or_default();
                 debug!("got entry");
                 trace!("path: {path}");
-                MaildirCoroutineState::Complete(Ok(MaildirFullEntry::from((path, contents))))
+                let entry = self.maildir.entry(path);
+                MaildirCoroutineState::Complete(Ok(MaildirFullEntry::from((entry, contents))))
             }
             (_, arg) => {
                 let err = MaildirEntryGetError::UnexpectedArg(arg);

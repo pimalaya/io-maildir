@@ -6,9 +6,9 @@
 //!
 //! io-maildir is filesystem-flavoured: every coroutine in this crate picks
 //! [`MaildirYield`] as its `Yield`, mixing filesystem `Wants*` requests with
-//! environmental inputs (time / pid / hostname) needed to mint Maildir message
-//! identifiers. The terminal `Return` is always a per-coroutine `Result<Output,
-//! Error>`.
+//! environmental inputs (time / pid / counter / hostname) needed to mint
+//! Maildir message identifiers, so the core holds no state of its own. The
+//! terminal `Return` is always a per-coroutine `Result<Output, Error>`.
 //!
 //! [`MaildirClient::run`] drives any standard-Yield coroutine to completion
 //! against the local filesystem.
@@ -65,9 +65,9 @@ pub trait MaildirCoroutine {
 
 /// Standard I/O Yield used by every io-maildir coroutine.
 ///
-/// Mixes filesystem step requests with the three environmental inputs the
+/// Mixes filesystem step requests with the four environmental inputs the
 /// Maildir delivery protocol needs to mint message identifiers (time, pid,
-/// hostname).
+/// counter, hostname).
 #[derive(Debug)]
 pub enum MaildirYield {
     /// Driver must check each path for existence as a regular file and resume
@@ -122,6 +122,11 @@ pub enum MaildirYield {
     /// Driver must supply the current process id and resume with
     /// [`MaildirReply::Pid`].
     WantsPid,
+
+    /// Driver must supply a number it gave to no other request in this
+    /// process, such as a count of its deliveries, and resume with
+    /// [`MaildirReply::Counter`].
+    WantsCounter,
 
     /// Driver must supply the host name and resume with
     /// [`MaildirReply::Hostname`].
@@ -178,6 +183,9 @@ pub enum MaildirReply {
 
     /// Answer to [`MaildirYield::WantsPid`].
     Pid(u32),
+
+    /// Answer to [`MaildirYield::WantsCounter`].
+    Counter(u32),
 
     /// Answer to [`MaildirYield::WantsHostname`].
     Hostname(String),

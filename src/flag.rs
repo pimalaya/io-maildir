@@ -23,10 +23,7 @@ use alloc::{
 
 use log::trace;
 
-use crate::{
-    entry::{INFORMATIONAL_SUFFIX_SEPARATOR, headers::extract_keywords_header},
-    path::MaildirFsPath,
-};
+use crate::entry::{MaildirEntry, headers::extract_keywords_header};
 
 /// A set of Maildir flags plus opaque info-section letters.
 #[derive(Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
@@ -45,8 +42,8 @@ pub struct MaildirFlags {
 /// `,S=<size>,W=<vsize>` extensions in the unique part are not read as
 /// flag letters. Only version 2 carries flags: an experimental `:1,`
 /// info section holds none.
-fn info_letters(file_name: &str) -> Option<&str> {
-    let (_, info) = file_name.rsplit_once(INFORMATIONAL_SUFFIX_SEPARATOR)?;
+pub(crate) fn info_letters(file_name: &str, separator: char) -> Option<&str> {
+    let (_, info) = file_name.rsplit_once(separator)?;
     info.strip_prefix("2,")
 }
 
@@ -55,8 +52,8 @@ fn info_letters(file_name: &str) -> Option<&str> {
 ///
 /// A flag write would rebuild the name as `<id>:2,<letters>`, losing
 /// it, so the flag coroutines refuse such an entry.
-pub(crate) fn has_foreign_info(file_name: &str) -> bool {
-    match file_name.rsplit_once(INFORMATIONAL_SUFFIX_SEPARATOR) {
+pub(crate) fn has_foreign_info(file_name: &str, separator: char) -> bool {
+    match file_name.rsplit_once(separator) {
         Some((_, info)) => !info.starts_with("2,"),
         None => false,
     }
@@ -69,13 +66,13 @@ pub(crate) fn is_valid_keyword(keyword: &str) -> bool {
     !keyword.is_empty() && keyword.trim() == keyword && !keyword.contains(char::is_control)
 }
 
-impl From<&MaildirFsPath> for MaildirFlags {
-    fn from(path: &MaildirFsPath) -> Self {
-        let Some(file_name) = path.file_name() else {
+impl From<&MaildirEntry> for MaildirFlags {
+    fn from(entry: &MaildirEntry) -> Self {
+        let Some(file_name) = entry.path.file_name() else {
             return Default::default();
         };
 
-        let Some(letters) = info_letters(file_name) else {
+        let Some(letters) = info_letters(file_name, entry.separator) else {
             return Default::default();
         };
 
@@ -157,14 +154,14 @@ impl MaildirFlags {
         self.flags.insert(flag)
     }
 
-    /// Like [`From<&MaildirFsPath>`] but resolves lowercase `a..z` letters
+    /// Like [`From<&MaildirEntry>`] but resolves lowercase `a..z` letters
     /// through a dovecot-keywords table.
-    pub fn with_dovecot(path: &MaildirFsPath, table: &BTreeMap<char, String>) -> Self {
-        let Some(file_name) = path.file_name() else {
+    pub fn with_dovecot(entry: &MaildirEntry, table: &BTreeMap<char, String>) -> Self {
+        let Some(file_name) = entry.path.file_name() else {
             return Default::default();
         };
 
-        let Some(letters) = info_letters(file_name) else {
+        let Some(letters) = info_letters(file_name, entry.separator) else {
             return Default::default();
         };
 
@@ -194,12 +191,12 @@ impl MaildirFlags {
     /// store, which is why the client resolves an entry's flags through
     /// it rather than leaving each caller to spell the composition out.
     pub fn with_keywords(
-        path: &MaildirFsPath,
+        entry: &MaildirEntry,
         contents: &[u8],
         table: &BTreeMap<char, String>,
         header: Option<KeywordHeader>,
     ) -> Self {
-        let mut flags = Self::with_dovecot(path, table);
+        let mut flags = Self::with_dovecot(entry, table);
 
         if let Some(header) = header {
             flags.extend_keywords(extract_keywords_header(contents, header));
@@ -384,10 +381,10 @@ impl fmt::Display for KeywordHeader {
 mod tests {
     use alloc::{string::ToString, vec::Vec};
 
-    use crate::{flag::*, path::MaildirFsPath};
+    use crate::flag::*;
 
-    fn path(name: &str) -> MaildirFsPath {
-        MaildirFsPath::new(name)
+    fn path(name: &str) -> MaildirEntry {
+        MaildirEntry::from_path(name)
     }
 
     fn keywords(flags: &MaildirFlags) -> Vec<&str> {
@@ -401,9 +398,20 @@ mod tests {
 
         assert!(MaildirFlags::from(&path).is_empty());
         assert!(MaildirFlags::with_dovecot(&path, &table).is_empty());
-        assert!(has_foreign_info("1700000008.M8P8.host:1,experimental"));
-        assert!(!has_foreign_info("1700000008.M8P8.host:2,S"));
-        assert!(!has_foreign_info("1700000008.M8P8.host"));
+        assert!(has_foreign_info("1700000008.M8P8.host:1,experimental", ':'));
+        assert!(!has_foreign_info("1700000008.M8P8.host:2,S", ':'));
+        assert!(!has_foreign_info("1700000008.M8P8.host", ':'));
+    }
+
+    #[test]
+    fn the_info_section_starts_at_the_separator_of_the_entry() {
+        let mut entry = path("/m/cur/1700000008.M8P8.host;2,FS");
+        assert!(MaildirFlags::from(&entry).is_empty());
+        assert_eq!(entry.id(), Some("1700000008.M8P8.host;2,FS"));
+
+        entry.separator = ';';
+        assert_eq!(MaildirFlags::from(&entry).to_string(), "FS");
+        assert_eq!(entry.id(), Some("1700000008.M8P8.host"));
     }
 
     #[test]

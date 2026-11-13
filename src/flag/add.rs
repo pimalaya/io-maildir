@@ -25,7 +25,6 @@ use thiserror::Error;
 
 use crate::{
     coroutine::*,
-    entry::INFORMATIONAL_SUFFIX_SEPARATOR,
     entry::locate::*,
     flag::{MaildirFlags, has_foreign_info},
     maildir::{Maildir, MaildirSubdir},
@@ -87,7 +86,9 @@ impl MaildirCoroutine for MaildirFlagsAdd {
             (State::Locate(c), arg) => {
                 let out = maildir_try!(c, arg);
 
-                if out.path.file_name().is_some_and(has_foreign_info) {
+                let separator = self.maildir.separator;
+                let name = out.path.file_name();
+                if name.is_some_and(|name| has_foreign_info(name, separator)) {
                     let err = MaildirFlagsAddError::ForeignInfo(out.path);
                     return MaildirCoroutineState::Complete(Err(err));
                 }
@@ -105,10 +106,8 @@ impl MaildirCoroutine for MaildirFlagsAdd {
                             debug!("added flags");
                             return MaildirCoroutineState::Complete(Ok(()));
                         }
-                        let id = crate::entry::MaildirEntry::from_path(out.path.clone())
-                            .id()
-                            .unwrap_or(&self.id)
-                            .to_string();
+                        let entry = self.maildir.entry(out.path.clone());
+                        let id = entry.id().unwrap_or(&self.id).to_string();
                         let new_path = if out.subdir == MaildirSubdir::New && flags.is_empty() {
                             self.maildir.new().join(&id)
                         } else {
@@ -149,7 +148,7 @@ impl fmt::Display for State {
 
 fn cur_path_with_flags(maildir: &Maildir, id: &str, flags: &MaildirFlags) -> MaildirFsPath {
     let mut name = String::from(id);
-    name.push(INFORMATIONAL_SUFFIX_SEPARATOR);
+    name.push(maildir.separator);
     name.push_str("2,");
     name.push_str(&flags.to_string());
     maildir.cur().join(&name)

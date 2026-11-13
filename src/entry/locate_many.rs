@@ -7,14 +7,15 @@
 //!
 //! ```rust,no_run
 //! use io_maildir::{
-//!     client::MaildirClient, entry::locate_many::MaildirEntriesLocate,
+//!     client::MaildirClient,
+//!     entry::locate_many::MaildirEntryLocateMany,
 //! };
 //!
 //! let client = MaildirClient::new("/path/to/root");
 //! let maildir = client.load_maildir("inbox").unwrap();
 //!
 //! let ids = ["1700000000.1.M0P1.host", "1700000001.2.M0P1.host"];
-//! let coroutine = MaildirEntriesLocate::new(maildir, ids);
+//! let coroutine = MaildirEntryLocateMany::new(maildir, ids);
 //!
 //! for (id, entry) in client.run(coroutine).unwrap() {
 //!     println!("found {id} at {}", entry.path);
@@ -40,9 +41,9 @@ use crate::{
     maildir::Maildir,
 };
 
-/// Failure causes during a [`MaildirEntriesLocate`] step.
+/// Failure causes during a [`MaildirEntryLocateMany`] step.
 #[derive(Clone, Debug, Error)]
-pub enum MaildirEntriesLocateError {
+pub enum MaildirEntryLocateManyError {
     /// A reply arrived that does not match the awaited step.
     #[error("Maildir messages locate failed: unexpected arg {0:?}")]
     UnexpectedArg(Option<MaildirReply>),
@@ -57,20 +58,21 @@ pub enum MaildirEntriesLocateError {
 ///
 /// [`MaildirEntryLocate`]: crate::entry::locate::MaildirEntryLocate
 #[derive(Clone, Debug)]
-pub struct MaildirEntriesLocate {
+pub struct MaildirEntryLocateMany {
     maildir: Maildir,
     ids: BTreeSet<String>,
     state: State,
 }
 
-impl MaildirEntriesLocate {
+impl MaildirEntryLocateMany {
     /// Builds a coroutine locating the Maildir entries with the given
     /// IDs.
     pub fn new(maildir: Maildir, ids: impl IntoIterator<Item = impl ToString>) -> Self {
+        let separator = maildir.separator;
         let ids = ids.into_iter().map(|id| id.to_string());
         Self {
             maildir,
-            ids: ids.filter(|id| is_entry_name(id)).collect(),
+            ids: ids.filter(|id| is_entry_name(id, separator)).collect(),
             state: State::Start,
         }
     }
@@ -87,9 +89,9 @@ impl MaildirEntriesLocate {
     }
 }
 
-impl MaildirCoroutine for MaildirEntriesLocate {
+impl MaildirCoroutine for MaildirEntryLocateMany {
     type Yield = MaildirYield;
-    type Return = Result<BTreeMap<String, MaildirEntryLocateOutput>, MaildirEntriesLocateError>;
+    type Return = Result<BTreeMap<String, MaildirEntryLocateOutput>, MaildirEntryLocateManyError>;
 
     fn resume(
         &mut self,
@@ -109,7 +111,7 @@ impl MaildirCoroutine for MaildirEntriesLocate {
                 MaildirCoroutineState::Complete(Ok(found))
             }
             (_, arg) => {
-                let err = MaildirEntriesLocateError::UnexpectedArg(arg);
+                let err = MaildirEntryLocateManyError::UnexpectedArg(arg);
                 MaildirCoroutineState::Complete(Err(err))
             }
         }
@@ -158,7 +160,7 @@ mod tests {
         ids: &[&str],
         reads: &[&[(&str, MaildirFileKind)]],
     ) -> (BTreeMap<String, MaildirEntryLocateOutput>, usize) {
-        let mut cor = MaildirEntriesLocate::new(maildir(), ids);
+        let mut cor = MaildirEntryLocateMany::new(maildir(), ids);
         let mut requests = 0;
         let mut arg = None;
 
@@ -263,11 +265,12 @@ mod tests {
 
     #[test]
     fn unexpected_reply_returns_error() {
-        let mut cor = MaildirEntriesLocate::new(maildir(), ["a"]);
+        let mut cor = MaildirEntryLocateMany::new(maildir(), ["a"]);
         let _ = cor.resume(None);
 
         match cor.resume(Some(MaildirReply::DirCreate)) {
-            MaildirCoroutineState::Complete(Err(MaildirEntriesLocateError::UnexpectedArg(_))) => {}
+            MaildirCoroutineState::Complete(Err(MaildirEntryLocateManyError::UnexpectedArg(_))) => {
+            }
             state => panic!("expected Complete(Err), got {state:?}"),
         }
     }

@@ -36,7 +36,7 @@ use thiserror::Error;
 
 use crate::{
     coroutine::*,
-    entry::{INFORMATIONAL_SUFFIX_SEPARATOR, locate::*, mint_id},
+    entry::{locate::*, mint_id},
     flag::MaildirFlags,
     maildir::{Maildir, MaildirSubdir},
     maildir_try,
@@ -126,13 +126,35 @@ impl MaildirCoroutine for MaildirEntryMove {
                 },
                 Some(MaildirReply::Pid(pid)),
             ) => {
-                self.state = State::ReadHostname {
+                self.state = State::ReadCounter {
                     source: mem::take(source),
                     subdir: subdir.clone(),
                     flags: mem::take(flags),
                     secs: *secs,
                     nanos: *nanos,
                     pid,
+                };
+                MaildirCoroutineState::Yielded(MaildirYield::WantsCounter)
+            }
+            (
+                State::ReadCounter {
+                    source,
+                    subdir,
+                    flags,
+                    secs,
+                    nanos,
+                    pid,
+                },
+                Some(MaildirReply::Counter(counter)),
+            ) => {
+                self.state = State::ReadHostname {
+                    source: mem::take(source),
+                    subdir: subdir.clone(),
+                    flags: mem::take(flags),
+                    secs: *secs,
+                    nanos: *nanos,
+                    pid: *pid,
+                    counter,
                 };
                 MaildirCoroutineState::Yielded(MaildirYield::WantsHostname)
             }
@@ -144,10 +166,12 @@ impl MaildirCoroutine for MaildirEntryMove {
                     secs,
                     nanos,
                     pid,
+                    counter,
                 },
                 Some(MaildirReply::Hostname(hostname)),
             ) => {
-                let id = mint_id(*secs, *nanos, *pid, &hostname);
+                let separator = self.target.separator;
+                let id = mint_id(*secs, *nanos, *pid, *counter, &hostname, separator);
                 let target = build_target_path(&self.target, subdir, &id, flags);
                 let dirs = [&*source, &target].map(|path| path.parent().unwrap_or_default());
                 let dirs = dirs.into_iter().map(MaildirFsPath::from).collect();
@@ -187,6 +211,14 @@ enum State {
         secs: u64,
         nanos: u32,
     },
+    ReadCounter {
+        source: MaildirFsPath,
+        subdir: MaildirSubdir,
+        flags: MaildirFlags,
+        secs: u64,
+        nanos: u32,
+        pid: u32,
+    },
     ReadHostname {
         source: MaildirFsPath,
         subdir: MaildirSubdir,
@@ -194,6 +226,7 @@ enum State {
         secs: u64,
         nanos: u32,
         pid: u32,
+        counter: u32,
     },
     Rename {
         id: String,
@@ -210,6 +243,7 @@ impl fmt::Display for State {
             Self::Locate(_) => f.write_str("locate source"),
             Self::ReadTime { .. } => f.write_str("read time"),
             Self::ReadPid { .. } => f.write_str("read pid"),
+            Self::ReadCounter { .. } => f.write_str("read counter"),
             Self::ReadHostname { .. } => f.write_str("read hostname"),
             Self::Rename { .. } => f.write_str("rename into place"),
             Self::SyncDirs { .. } => f.write_str("sync subdirectories"),
@@ -225,7 +259,7 @@ fn build_target_path(
 ) -> MaildirFsPath {
     match subdir {
         MaildirSubdir::Cur => {
-            let name = format!("{id}{INFORMATIONAL_SUFFIX_SEPARATOR}2,{flags}");
+            let name = format!("{id}{}2,{flags}", target.separator);
             target.cur().join(&name)
         }
         MaildirSubdir::New => target.new().join(id),
@@ -293,6 +327,10 @@ mod tests {
             state => panic!("expected WantsPid, got {state:?}"),
         }
         match cor.resume(Some(MaildirReply::Pid(3))) {
+            MaildirCoroutineState::Yielded(MaildirYield::WantsCounter) => {}
+            state => panic!("expected WantsCounter, got {state:?}"),
+        }
+        match cor.resume(Some(MaildirReply::Counter(4))) {
             MaildirCoroutineState::Yielded(MaildirYield::WantsHostname) => {}
             state => panic!("expected WantsHostname, got {state:?}"),
         }

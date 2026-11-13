@@ -7,13 +7,13 @@
 use alloc::string::String;
 
 use crate::{
-    maildir::{CUR, NEW, TMP},
+    maildir::{CUR, NEW, SEPARATOR, TMP},
     path::{MaildirFsPath, MaildirPath},
 };
 
 /// Root folder holding one or more Maildirs, plus the layout used to
 /// translate logical mailbox names to on-disk paths.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MaildirStore {
     /// Filesystem root that holds the tree.
     pub root: MaildirFsPath,
@@ -21,6 +21,20 @@ pub struct MaildirStore {
     /// siblings of cur/new/tmp at the root, no nesting. Default off: fs layout
     /// (recursive descent through real nested directories).
     pub maildirpp: bool,
+    /// Character between the id of an entry and its `2,<flags>` info
+    /// section. The colon by default; `;` or `!` in a store kept on a
+    /// filesystem that reserves the colon.
+    pub separator: char,
+}
+
+impl Default for MaildirStore {
+    fn default() -> Self {
+        Self {
+            root: MaildirFsPath::default(),
+            maildirpp: false,
+            separator: SEPARATOR,
+        }
+    }
 }
 
 impl MaildirStore {
@@ -56,9 +70,13 @@ impl MaildirStore {
     ///
     /// The fs layout keeps a folder beside the three subdirectories of
     /// its parent, so such a name resolves onto the parent's messages.
+    /// A store whose separator is not the colon sits on a filesystem
+    /// where the backslash separates paths too, so it takes none.
     pub fn names_folder(&self, path: &MaildirPath) -> bool {
-        let reserved = |name: &str| !self.maildirpp && matches!(name, CUR | NEW | TMP);
-        path.names_folder() && !path.components().any(reserved)
+        let subdir = |name: &str| !self.maildirpp && matches!(name, CUR | NEW | TMP);
+        let reserved = |name: &str| self.separator != SEPARATOR && name.contains('\\');
+        let mut names = path.components();
+        path.names_folder() && !names.any(|name| subdir(name) || reserved(name))
     }
 
     /// Returns `true` when `path` names the root of this store or a
@@ -104,6 +122,7 @@ mod tests {
         let store = MaildirStore {
             root: MaildirFsPath::from("/tmp/m"),
             maildirpp: false,
+            separator: ':',
         };
         assert_eq!(store.resolve(&MaildirPath::default()).as_str(), "/tmp/m");
     }
@@ -113,6 +132,7 @@ mod tests {
         let store = MaildirStore {
             root: MaildirFsPath::from("/tmp/m"),
             maildirpp: false,
+            separator: ':',
         };
         assert_eq!(
             store.resolve(&MaildirPath::from("Foo/Bar")).as_str(),
@@ -125,6 +145,7 @@ mod tests {
         let store = MaildirStore {
             root: MaildirFsPath::from("/tmp/m"),
             maildirpp: true,
+            separator: ':',
         };
         assert_eq!(
             store.resolve(&MaildirPath::from("Foo/Bar")).as_str(),
@@ -137,6 +158,7 @@ mod tests {
         let store = MaildirStore {
             root: MaildirFsPath::from("/tmp/m"),
             maildirpp: true,
+            separator: ':',
         };
         assert_eq!(store.resolve(&MaildirPath::default()).as_str(), "/tmp/m");
     }
@@ -146,6 +168,7 @@ mod tests {
         let mut store = MaildirStore {
             root: MaildirFsPath::from("/tmp/m"),
             maildirpp: false,
+            separator: ':',
         };
 
         for path in ["cur", "new", "tmp", "Foo/cur", "new/Foo", "", "..", "Foo/."] {
@@ -166,10 +189,28 @@ mod tests {
     }
 
     #[test]
+    fn a_store_off_the_colon_takes_no_backslash_in_a_folder_name() {
+        let mut store = MaildirStore::default();
+
+        for path in ["Foo\\cur", "..\\Foo", "Foo/Bar\\Baz"] {
+            assert!(store.names_folder(&MaildirPath::from(path)), "{path}");
+        }
+
+        store.separator = ';';
+
+        for path in ["Foo\\cur", "..\\Foo", "Foo/Bar\\Baz"] {
+            assert!(!store.names_folder(&MaildirPath::from(path)), "{path}");
+        }
+        assert!(store.names_folder(&MaildirPath::from("Foo/Bar")));
+    }
+
+    #[test]
     fn the_root_and_the_folders_below_it_are_maildirs() {
         for maildirpp in [false, true] {
-            let root = MaildirFsPath::from("/tmp/m");
-            let store = MaildirStore { root, maildirpp };
+            let store = MaildirStore {
+                maildirpp,
+                ..Default::default()
+            };
 
             for path in ["", "/", "Foo"] {
                 assert!(store.names_maildir(&MaildirPath::from(path)), "{path}");
@@ -185,6 +226,7 @@ mod tests {
         let store = MaildirStore {
             root: MaildirFsPath::from("/tmp/m"),
             maildirpp: false,
+            separator: ':',
         };
         let logical = MaildirPath::from("Foo/Bar");
         let fs = store.resolve(&logical);
@@ -196,6 +238,7 @@ mod tests {
         let store = MaildirStore {
             root: MaildirFsPath::from("/tmp/m"),
             maildirpp: true,
+            separator: ':',
         };
         let logical = MaildirPath::from("Foo/Bar");
         let fs = store.resolve(&logical);
@@ -207,6 +250,7 @@ mod tests {
         let store = MaildirStore {
             root: MaildirFsPath::from("/tmp/m"),
             maildirpp: false,
+            separator: ':',
         };
         assert_eq!(store.relative(&MaildirFsPath::from("/other/path")), None);
     }

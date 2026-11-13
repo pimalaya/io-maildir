@@ -29,7 +29,7 @@ Lookup SHALL accept an entry's parsed logical ID or its complete basename, never
 
 Lookup SHALL first accept an exact file in `new/`, then an exact file in `tmp/`, then an exact file in `cur/`, all three probed in one request, so a complete basename costs no directory read. On a miss it SHALL scan `new/`, then `cur/`, choosing the lexicographically first regular file within each, which also settles duplicate logical IDs. It SHALL NOT scan `tmp/`, and SHALL skip dotfiles and non-files.
 
-Empty, dot-prefixed, NUL-containing or path-separated input SHALL return NotFound before any I/O: `/` on every platform, `\` and the drive or stream colon on Windows only, `\` staying a valid Unix basename character.
+Empty, dot-prefixed, NUL-containing or path-separated input SHALL return NotFound before any I/O: `/` in every store, `\` and the drive or stream colon too in a store whose info separator is not the colon, `\` staying a valid basename character on the colon.
 
 #### Scenario: A complete basename in cur/
 
@@ -59,7 +59,7 @@ A driver that reads the kind of an entry after its name SHALL report an entry go
 
 ### Requirement: Many identifiers resolve from one read
 
-`MaildirEntriesLocate` and `MaildirClient::locate_entries` SHALL resolve any number of identifiers from one read of `new/`, `tmp/` and `cur/`, each to the entry the single lookup selects, `tmp/` matching by complete basename only. An identifier naming no entry SHALL be left out of the result.
+`MaildirEntryLocateMany` and `MaildirClient::locate_many` SHALL resolve any number of identifiers from one read of `new/`, `tmp/` and `cur/`, each to the entry the single lookup selects, `tmp/` matching by complete basename only. An identifier naming no entry SHALL be left out of the result.
 
 #### Scenario: Four identifiers
 

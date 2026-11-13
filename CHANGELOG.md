@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-13
+
 ### Changed
 
 - `MaildirClient::copy` and the `MaildirEntryCopy` coroutine return the id minted for the copy instead of `()`.
@@ -293,7 +295,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [himalaya#637]: https://github.com/pimalaya/himalaya/issues/637
 [himalaya#738]: https://github.com/pimalaya/himalaya/issues/738
 
-[unreleased]: https://github.com/pimalaya/io-maildir/compare/v0.3.1..HEAD
+[unreleased]: https://github.com/pimalaya/io-maildir/compare/v0.4.0..HEAD
+[0.4.0]: https://github.com/pimalaya/io-maildir/compare/v0.3.1..v0.4.0
 [0.3.1]: https://github.com/pimalaya/io-maildir/compare/v0.3.0..v0.3.1
 [0.3.0]: https://github.com/pimalaya/io-maildir/compare/v0.2.1..v0.3.0
 [0.2.1]: https://github.com/pimalaya/io-maildir/compare/v0.2.0..v0.2.1

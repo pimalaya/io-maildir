@@ -243,6 +243,20 @@ impl MaildirClient {
                 }
                 MaildirReply::Copy
             }
+            MaildirYield::WantsFileSync(paths) => {
+                for path in paths {
+                    trace!("sync file {path}");
+                    sync_file(&path).map_err(at(&path))?;
+                }
+                MaildirReply::FileSync
+            }
+            MaildirYield::WantsDirSync(paths) => {
+                for path in paths {
+                    trace!("sync dir {path}");
+                    sync_dir(&path).map_err(at(&path))?;
+                }
+                MaildirReply::DirSync
+            }
             MaildirYield::WantsTime => {
                 let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
                 MaildirReply::Time {
@@ -665,7 +679,7 @@ impl MaildirClient {
         target_subdir: Option<MaildirSubdir>,
     ) -> Result<String, MaildirClientError> {
         let id = id.to_string();
-        let keywords = self.entry_keywords(&source, &target, &id)?;
+        let keywords = self.entry_keywords(&source, &target, target_subdir.as_ref(), &id)?;
         let coroutine = MaildirEntryCopy::new(id, source, target.clone(), target_subdir);
         let id = self.run(coroutine)?;
         self.remap_keywords(&target, &id, keywords)?;
@@ -684,7 +698,7 @@ impl MaildirClient {
         target_subdir: Option<MaildirSubdir>,
     ) -> Result<String, MaildirClientError> {
         let id = id.to_string();
-        let keywords = self.entry_keywords(&source, &target, &id)?;
+        let keywords = self.entry_keywords(&source, &target, target_subdir.as_ref(), &id)?;
         let coroutine = MaildirEntryMove::new(id, source, target.clone(), target_subdir);
         let id = self.run(coroutine)?;
         self.remap_keywords(&target, &id, keywords)?;
@@ -693,26 +707,36 @@ impl MaildirClient {
 
     /// The keywords the dovecot letters of entry `id` in `source` stand
     /// for, `None` when nothing needs renaming: [`Self::dovecot_keywords`]
-    /// unset, `source` and `target` one Maildir, or no letter on the
-    /// entry.
+    /// unset, `source` and `target` one Maildir, no letter on the entry,
+    /// or a delivery outside `cur/`, which carries none.
+    ///
+    /// Their slots are allocated in `target` on the way, so a keyword
+    /// file that cannot be rewritten fails the delivery before it lands.
     fn entry_keywords(
         &self,
         source: &Maildir,
         target: &Maildir,
+        target_subdir: Option<&MaildirSubdir>,
         id: &str,
     ) -> Result<Option<Vec<String>>, MaildirClientError> {
         if !self.dovecot_keywords || source.path() == target.path() {
             return Ok(None);
         }
 
-        let (path, _, _) = self.locate(source.clone(), id)?;
-        if !has_keyword_letters(&path) {
+        let (path, subdir, _) = self.locate(source.clone(), id)?;
+        let lands_in_cur = *target_subdir.unwrap_or(&subdir) == MaildirSubdir::Cur;
+        if !lands_in_cur || !has_keyword_letters(&path) {
             return Ok(None);
         }
 
         let table = self.keyword_table(source);
         let mut flags = MaildirFlags::with_dovecot(&path, &table);
-        Ok(Some(flags.drain_keywords()))
+        let keywords = flags.drain_keywords();
+
+        flags.extend_keywords(keywords.iter().cloned());
+        self.allocate_keywords(target, &mut flags)?;
+
+        Ok(Some(keywords))
     }
 
     /// Rewrites the keyword letters of entry `id` in `target` so they
@@ -865,6 +889,37 @@ impl MaildirClient {
 /// its kind kept.
 fn at(path: &MaildirFsPath) -> impl FnOnce(io::Error) -> MaildirClientError + '_ {
     move |err| io::Error::new(err.kind(), format!("{path}: {err}")).into()
+}
+
+/// Flushes the file at `path` to stable storage.
+#[cfg(unix)]
+fn sync_file(path: &MaildirFsPath) -> io::Result<()> {
+    fs::File::open(path.as_str())?.sync_all()
+}
+
+/// Flushes the file at `path` to stable storage.
+///
+/// Flushing needs write access outside Unix, so a read-only file is
+/// left as it is.
+#[cfg(not(unix))]
+fn sync_file(path: &MaildirFsPath) -> io::Result<()> {
+    match fs::OpenOptions::new().write(true).open(path.as_str()) {
+        Ok(file) => file.sync_all(),
+        Err(err) if err.kind() == io::ErrorKind::PermissionDenied => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+/// Flushes the directory at `path` to stable storage.
+#[cfg(unix)]
+fn sync_dir(path: &MaildirFsPath) -> io::Result<()> {
+    fs::File::open(path.as_str())?.sync_all()
+}
+
+/// Does nothing: a directory cannot be flushed outside Unix.
+#[cfg(not(unix))]
+fn sync_dir(_path: &MaildirFsPath) -> io::Result<()> {
+    Ok(())
 }
 
 /// Whether `err` says the path is not there, as opposed to unreachable.

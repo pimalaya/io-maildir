@@ -19,7 +19,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `allocate_keyword_slot` returns `None` for a new keyword that is empty, padded with whitespace or holding a control character.
 
+- `MaildirEntryStore`, `MaildirEntryCopy`, `MaildirEntryMove` and `MaildirDovecotStore` yield `WantsFileSync` and `WantsDirSync`.
+
+  A driver other than `MaildirClient` has to answer both, with `MaildirReply::FileSync` and `MaildirReply::DirSync`.
+
+- `MaildirDovecotStore` reads the `dovecot-keywords` file, then writes it under `tmp/` and renames it into place.
+
+- `keyword_slot` and `allocate_keyword_slot` match a keyword to a name without regard to ASCII case.
+
 ### Added
+
+- `MaildirYield::WantsFileSync` and `MaildirReply::FileSync`, asking the driver to flush files to stable storage.
+
+- `MaildirYield::WantsDirSync` and `MaildirReply::DirSync`, asking the driver to flush directories to stable storage.
+
+- `MaildirDovecotStoreError::Malformed`, refusing to rewrite a `dovecot-keywords` file that does not parse.
+
+- `rewrite_dovecot_keywords`, replacing the slots `a..z` of a `dovecot-keywords` content and keeping its other lines.
 
 - `MaildirStore::names_folder`, true for a path naming a folder below the store root under the store's layout.
 
@@ -36,6 +52,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MaildirClient::read_readable_entries`, reading a batch of entries while skipping, with a warning, the ones that cannot be read.
 
 ### Fixed
+
+- Fixed a store, copy or move reported done before it reached stable storage.
+
+  The entry is flushed under `tmp/` before the rename and its directory after, so a power cut no longer leaves an empty or missing message behind a success.
+
+- Fixed a `dovecot-keywords` rewrite dropping the lines it does not read.
+
+  Lines naming an index of 26 or more are kept in place, and a file that is not UTF-8 or holds a line that is no slot is refused rather than replaced.
+
+- Fixed a `dovecot-keywords` file truncated in place on every rewrite: it is replaced by a rename.
+
+- Fixed two keywords differing by case taking two `dovecot-keywords` slots.
 
 - Fixed `cur`, `new` and `tmp` accepted as folder names in the fs layout.
 

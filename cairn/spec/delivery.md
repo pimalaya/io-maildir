@@ -46,6 +46,16 @@ Every entry entering a Maildir, whether written from a caller's bytes or copied 
 - WHEN the destination Maildir is enumerated
 - THEN no entry under a final name is holding a truncated message
 
+### Requirement: A delivery reported done is flushed to stable storage
+
+A store or a copy SHALL ask the driver to flush the entry under `tmp/` (`WantsFileSync`) before the rename, and to flush the directory it was renamed into (`WantsDirSync`) after it. A move, being a rename alone, SHALL ask for the source and the target directories to be flushed after it. A delivery reported done then survives a power cut, where staging in `tmp/` alone covers a dying process. `MaildirClient` SHALL answer both requests with a sync of the file or directory; where the platform cannot flush a directory, or a read-only file, the request SHALL be acknowledged as it is. Flag writes and folder operations ask for no flush.
+
+#### Scenario: A stored message
+
+- GIVEN a message stored into `new/`
+- WHEN the store runs
+- THEN the driver is asked, in order, to write `tmp/<id>`, flush it, rename it to `new/<id>` and flush `new/`
+
 ### Requirement: A move is a single rename
 
 Moving an entry into another Maildir SHALL be one rename from the source path to the freshly minted destination name, so the entry exists at exactly one of the two paths at any instant.

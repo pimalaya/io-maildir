@@ -50,6 +50,10 @@ pub enum MaildirFlagsSetError {
 
 /// Replaces the flags of a Maildir entry.
 ///
+/// The info section is rebuilt from the given set alone: unlike an add
+/// or a remove, any letter the entry carried and the set does not name,
+/// a dovecot keyword slot included, is dropped.
+///
 /// Entries in `/cur` are renamed with the new flag set. A `/new` entry
 /// moves to `/cur` when its flags change to a nonempty set, and stays in
 /// `/new` under its plain logical ID when cleared. An unchanged entry
@@ -194,6 +198,30 @@ mod tests {
         assert_eq!(to, &MaildirFsPath::from("root/cur/abc:2,S"));
 
         expect_complete_ok(&mut cor, Some(MaildirReply::Rename));
+    }
+
+    #[test]
+    fn cur_subdir_replaces_the_letters_the_set_does_not_name() {
+        let mut flags = seen();
+        flags.extend_letters(['c']);
+        let mut cor = MaildirFlagsSet::new(maildir(), "abc", flags);
+
+        expect_wants_file_exists(&mut cor);
+
+        let mut probes = BTreeMap::new();
+        probes.insert(MaildirFsPath::from("root/new/abc"), false);
+        probes.insert(MaildirFsPath::from("root/tmp/abc"), false);
+        match cor.resume(Some(MaildirReply::FileExists(probes))) {
+            MaildirCoroutineState::Yielded(MaildirYield::WantsDirRead(_)) => {}
+            state => panic!("expected WantsDirRead, got {state:?}"),
+        }
+
+        let mut entries = BTreeMap::new();
+        let mut set = BTreeSet::new();
+        set.insert(MaildirFsPath::from("root/cur/abc:2,FXab"));
+        entries.insert(MaildirFsPath::from("root/cur"), set);
+        let pairs = expect_wants_rename(&mut cor, Some(MaildirReply::DirRead(entries)));
+        assert_eq!(pairs[0].1, MaildirFsPath::from("root/cur/abc:2,Sc"));
     }
 
     #[test]

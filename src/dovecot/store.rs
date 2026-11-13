@@ -19,15 +19,20 @@
 //! client.run(coroutine).unwrap();
 //! ```
 
-use core::{fmt, mem};
+use core::{fmt, mem, str};
 
-use alloc::{collections::BTreeMap, string::String, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    string::String,
+    vec::Vec,
+};
 
 use log::debug;
 use thiserror::Error;
 
 use crate::{
-    coroutine::*, dovecot::utils::serialize_dovecot_keywords, maildir::Maildir, path::MaildirFsPath,
+    coroutine::*, dovecot::utils::rewrite_dovecot_keywords, entry::mint_id, maildir::Maildir,
+    path::MaildirFsPath,
 };
 
 const FILENAME: &str = "dovecot-keywords";
@@ -38,11 +43,21 @@ pub enum MaildirDovecotStoreError {
     /// A reply arrived that does not match the awaited step.
     #[error("Maildir dovecot store failed: unexpected arg {0:?}")]
     UnexpectedArg(Option<MaildirReply>),
+    /// The file holds a line that is no keyword slot, or is not UTF-8.
+    #[error("Maildir dovecot store failed: {0} does not parse and is left as it is")]
+    Malformed(MaildirFsPath),
 }
 
 /// Persists the `dovecot-keywords` slot table at the root of a Maildir.
+///
+/// The file is read first, so the slots beyond `a..z` it holds are kept,
+/// and one that does not parse is refused rather than replaced. The new
+/// content is written under `tmp/` then renamed over the file.
 #[derive(Debug)]
 pub struct MaildirDovecotStore {
+    maildir: Maildir,
+    path: MaildirFsPath,
+    table: BTreeMap<char, String>,
     state: State,
 }
 
@@ -50,11 +65,30 @@ impl MaildirDovecotStore {
     /// Builds a coroutine persisting the `dovecot-keywords` slot table
     /// at the root of a Maildir.
     pub fn new(maildir: &Maildir, table: &BTreeMap<char, String>) -> Self {
-        let path = maildir.path().join(FILENAME);
-        let payload = serialize_dovecot_keywords(table).into_bytes();
         Self {
-            state: State::Start { path, payload },
+            maildir: maildir.clone(),
+            path: maildir.path().join(FILENAME),
+            table: table.clone(),
+            state: State::Start,
         }
+    }
+
+    /// Builds the new content from the file's own, then asks for the
+    /// time, the first input of the tmp name.
+    fn rewrite(
+        &mut self,
+        bytes: &[u8],
+    ) -> MaildirCoroutineState<MaildirYield, <Self as MaildirCoroutine>::Return> {
+        let text = str::from_utf8(bytes).ok();
+        let Some(text) = text.and_then(|text| rewrite_dovecot_keywords(text, &self.table)) else {
+            let err = MaildirDovecotStoreError::Malformed(self.path.clone());
+            return MaildirCoroutineState::Complete(Err(err));
+        };
+
+        self.state = State::ReadTime {
+            payload: text.into_bytes(),
+        };
+        MaildirCoroutineState::Yielded(MaildirYield::WantsTime)
     }
 }
 
@@ -67,14 +101,80 @@ impl MaildirCoroutine for MaildirDovecotStore {
         arg: Option<MaildirReply>,
     ) -> MaildirCoroutineState<Self::Yield, Self::Return> {
         match (&mut self.state, arg) {
-            (State::Start { path, payload }, None) => {
-                let path = mem::take(path);
-                let payload = mem::take(payload);
-                let files = BTreeMap::from_iter([(path, payload)]);
-                self.state = State::Write;
+            (State::Start, None) => {
+                let paths = BTreeSet::from([self.path.clone()]);
+                self.state = State::Probe;
+                MaildirCoroutineState::Yielded(MaildirYield::WantsFileExists(paths))
+            }
+            (State::Probe, Some(MaildirReply::FileExists(map))) => {
+                if !map.get(&self.path).copied().unwrap_or(false) {
+                    return self.rewrite(&[]);
+                }
+
+                let paths = BTreeSet::from([self.path.clone()]);
+                self.state = State::Read;
+                MaildirCoroutineState::Yielded(MaildirYield::WantsFileRead(paths))
+            }
+            (State::Read, Some(MaildirReply::FileRead(mut map))) => {
+                let bytes = map.remove(&self.path).unwrap_or_default();
+                self.rewrite(&bytes)
+            }
+            (State::ReadTime { payload }, Some(MaildirReply::Time { secs, nanos })) => {
+                self.state = State::ReadPid {
+                    payload: mem::take(payload),
+                    secs,
+                    nanos,
+                };
+                MaildirCoroutineState::Yielded(MaildirYield::WantsPid)
+            }
+            (
+                State::ReadPid {
+                    payload,
+                    secs,
+                    nanos,
+                },
+                Some(MaildirReply::Pid(pid)),
+            ) => {
+                self.state = State::ReadHostname {
+                    payload: mem::take(payload),
+                    secs: *secs,
+                    nanos: *nanos,
+                    pid,
+                };
+                MaildirCoroutineState::Yielded(MaildirYield::WantsHostname)
+            }
+            (
+                State::ReadHostname {
+                    payload,
+                    secs,
+                    nanos,
+                    pid,
+                },
+                Some(MaildirReply::Hostname(hostname)),
+            ) => {
+                let id = mint_id(*secs, *nanos, *pid, &hostname);
+                let tmp_path = self.maildir.tmp().join(&id);
+                let files = BTreeMap::from([(tmp_path.clone(), mem::take(payload))]);
+                self.state = State::CreateTmp { tmp_path };
                 MaildirCoroutineState::Yielded(MaildirYield::WantsFileCreate(files))
             }
-            (State::Write, Some(MaildirReply::FileCreate)) => {
+            (State::CreateTmp { tmp_path }, Some(MaildirReply::FileCreate)) => {
+                let tmp_path = mem::take(tmp_path);
+                let paths = BTreeSet::from([tmp_path.clone()]);
+                self.state = State::SyncTmp { tmp_path };
+                MaildirCoroutineState::Yielded(MaildirYield::WantsFileSync(paths))
+            }
+            (State::SyncTmp { tmp_path }, Some(MaildirReply::FileSync)) => {
+                let pairs = vec![(mem::take(tmp_path), self.path.clone())];
+                self.state = State::Rename;
+                MaildirCoroutineState::Yielded(MaildirYield::WantsRename(pairs))
+            }
+            (State::Rename, Some(MaildirReply::Rename)) => {
+                let paths = BTreeSet::from([self.maildir.path().clone()]);
+                self.state = State::SyncDir;
+                MaildirCoroutineState::Yielded(MaildirYield::WantsDirSync(paths))
+            }
+            (State::SyncDir, Some(MaildirReply::DirSync)) => {
                 debug!("stored dovecot keywords");
                 MaildirCoroutineState::Complete(Ok(()))
             }
@@ -88,24 +188,54 @@ impl MaildirCoroutine for MaildirDovecotStore {
 
 #[derive(Debug)]
 enum State {
-    Start {
-        path: MaildirFsPath,
+    Start,
+    Probe,
+    Read,
+    ReadTime {
         payload: Vec<u8>,
     },
-    Write,
+    ReadPid {
+        payload: Vec<u8>,
+        secs: u64,
+        nanos: u32,
+    },
+    ReadHostname {
+        payload: Vec<u8>,
+        secs: u64,
+        nanos: u32,
+        pid: u32,
+    },
+    CreateTmp {
+        tmp_path: MaildirFsPath,
+    },
+    SyncTmp {
+        tmp_path: MaildirFsPath,
+    },
+    Rename,
+    SyncDir,
 }
 
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Start { .. } => f.write_str("start"),
-            Self::Write => f.write_str("write keywords table"),
+            Self::Start => f.write_str("start"),
+            Self::Probe => f.write_str("probe keywords table"),
+            Self::Read => f.write_str("read keywords table"),
+            Self::ReadTime { .. } => f.write_str("read time"),
+            Self::ReadPid { .. } => f.write_str("read pid"),
+            Self::ReadHostname { .. } => f.write_str("read hostname"),
+            Self::CreateTmp { .. } => f.write_str("create tmp keywords table"),
+            Self::SyncTmp { .. } => f.write_str("sync tmp keywords table"),
+            Self::Rename => f.write_str("rename into place"),
+            Self::SyncDir => f.write_str("sync maildir"),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use alloc::collections::BTreeSet;
+
     use crate::dovecot::store::*;
 
     fn maildir() -> Maildir {
@@ -116,48 +246,131 @@ mod tests {
         MaildirFsPath::from("root/dovecot-keywords")
     }
 
+    fn table(slots: &[(char, &str)]) -> BTreeMap<char, String> {
+        let slots = slots.iter();
+        slots
+            .map(|(letter, name)| (*letter, String::from(*name)))
+            .collect()
+    }
+
+    /// Stores `table` over a keyword file holding `file`, returning the
+    /// filesystem steps asked for and the bytes written.
+    fn store(
+        table: &BTreeMap<char, String>,
+        file: Option<&[u8]>,
+    ) -> Result<(Vec<&'static str>, Vec<u8>), MaildirDovecotStoreError> {
+        let mut cor = MaildirDovecotStore::new(&maildir(), table);
+        let mut steps = Vec::new();
+        let mut written = Vec::new();
+        let mut tmp = MaildirFsPath::default();
+        let mut arg = None;
+
+        loop {
+            let wants = match cor.resume(arg.take()) {
+                MaildirCoroutineState::Complete(Ok(())) => return Ok((steps, written)),
+                MaildirCoroutineState::Complete(Err(err)) => return Err(err),
+                MaildirCoroutineState::Yielded(wants) => wants,
+            };
+
+            arg = Some(match wants {
+                MaildirYield::WantsFileExists(paths) => {
+                    assert_eq!(paths, BTreeSet::from([keywords_path()]));
+                    steps.push("exists");
+                    let exists = BTreeMap::from([(keywords_path(), file.is_some())]);
+                    MaildirReply::FileExists(exists)
+                }
+                MaildirYield::WantsFileRead(paths) => {
+                    assert_eq!(paths, BTreeSet::from([keywords_path()]));
+                    steps.push("read");
+                    let bytes = file.unwrap().to_vec();
+                    MaildirReply::FileRead(BTreeMap::from([(keywords_path(), bytes)]))
+                }
+                MaildirYield::WantsTime => MaildirReply::Time { secs: 1, nanos: 2 },
+                MaildirYield::WantsPid => MaildirReply::Pid(3),
+                MaildirYield::WantsHostname => MaildirReply::Hostname(String::from("host")),
+                MaildirYield::WantsFileCreate(files) => {
+                    steps.push("create");
+                    let (path, bytes) = files.into_iter().next().unwrap();
+                    assert!(path.as_str().starts_with("root/tmp/1."), "got {path}");
+                    tmp = path;
+                    written = bytes;
+                    MaildirReply::FileCreate
+                }
+                MaildirYield::WantsFileSync(paths) => {
+                    steps.push("sync file");
+                    assert_eq!(paths, BTreeSet::from([tmp.clone()]));
+                    MaildirReply::FileSync
+                }
+                MaildirYield::WantsRename(pairs) => {
+                    steps.push("rename");
+                    assert_eq!(pairs, [(tmp.clone(), keywords_path())]);
+                    MaildirReply::Rename
+                }
+                MaildirYield::WantsDirSync(paths) => {
+                    steps.push("sync dir");
+                    assert_eq!(paths, BTreeSet::from([MaildirFsPath::from("root")]));
+                    MaildirReply::DirSync
+                }
+                wants => panic!("unexpected {wants:?}"),
+            });
+        }
+    }
+
     #[test]
-    fn test() {
-        let m = maildir();
-        let table = BTreeMap::from_iter([('a', String::from("Project"))]);
-        let mut cor = MaildirDovecotStore::new(&m, &table);
+    fn the_file_is_replaced_through_tmp_and_synced() {
+        let table = table(&[('a', "$Junk"), ('b', "Work")]);
+        let (steps, written) = store(&table, Some(b"0 $Junk\n")).unwrap();
 
-        let files = expect_wants_file_create(&mut cor);
-        assert!(files.contains_key(&keywords_path()));
+        let expected = [
+            "exists",
+            "read",
+            "create",
+            "sync file",
+            "rename",
+            "sync dir",
+        ];
+        assert_eq!(steps, expected);
+        assert_eq!(written, b"0 $Junk\n1 Work\n");
+    }
 
-        expect_complete_ok(&mut cor, Some(MaildirReply::FileCreate));
+    #[test]
+    fn a_missing_file_is_written_from_the_table() {
+        let (steps, written) = store(&table(&[('a', "Project")]), None).unwrap();
+
+        assert_eq!(
+            steps,
+            ["exists", "create", "sync file", "rename", "sync dir"]
+        );
+        assert_eq!(written, b"0 Project\n");
+    }
+
+    #[test]
+    fn the_lines_beyond_the_letters_are_kept_in_place() {
+        let table = table(&[('a', "$Junk"), ('c', "Work")]);
+        let file = b"30 Far\n0 $Junk\n\n1 Dropped\n26 Beyond\n";
+        let (_, written) = store(&table, Some(file)).unwrap();
+
+        assert_eq!(written, b"30 Far\n0 $Junk\n26 Beyond\n2 Work\n");
+    }
+
+    #[test]
+    fn a_file_that_does_not_parse_is_left_alone() {
+        let table = table(&[('a', "$Junk"), ('b', "Work")]);
+        let files: [&[u8]; 4] = [b"0 $Junk\nnot a slot\n", b"0 \xff\n", b"0\n", b"-1 x\n"];
+
+        for file in files {
+            let err = store(&table, Some(file)).unwrap_err();
+            assert!(matches!(err, MaildirDovecotStoreError::Malformed(_)));
+        }
     }
 
     #[test]
     fn unexpected_reply_returns_error() {
-        let m = maildir();
-        let mut cor = MaildirDovecotStore::new(&m, &BTreeMap::new());
-        let _ = expect_wants_file_create(&mut cor);
+        let mut cor = MaildirDovecotStore::new(&maildir(), &BTreeMap::new());
+        let _ = cor.resume(None);
 
-        let err = expect_complete_err(&mut cor, Some(MaildirReply::DirCreate));
-        assert!(matches!(err, MaildirDovecotStoreError::UnexpectedArg(_)));
-    }
-
-    fn expect_wants_file_create(cor: &mut MaildirDovecotStore) -> BTreeMap<MaildirFsPath, Vec<u8>> {
-        match cor.resume(None) {
-            MaildirCoroutineState::Yielded(MaildirYield::WantsFileCreate(files)) => files,
-            state => panic!("expected WantsFileCreate, got {state:?}"),
-        }
-    }
-
-    fn expect_complete_ok(cor: &mut MaildirDovecotStore, arg: Option<MaildirReply>) {
-        match cor.resume(arg) {
-            MaildirCoroutineState::Complete(Ok(())) => {}
-            state => panic!("expected Complete(Ok), got {state:?}"),
-        }
-    }
-
-    fn expect_complete_err(
-        cor: &mut MaildirDovecotStore,
-        arg: Option<MaildirReply>,
-    ) -> MaildirDovecotStoreError {
-        match cor.resume(arg) {
-            MaildirCoroutineState::Complete(Err(err)) => err,
+        match cor.resume(Some(MaildirReply::DirCreate)) {
+            MaildirCoroutineState::Complete(Err(MaildirDovecotStoreError::UnexpectedArg(_))) => {}
             state => panic!("expected Complete(Err), got {state:?}"),
         }
     }

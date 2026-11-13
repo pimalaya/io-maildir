@@ -32,7 +32,10 @@
 
 use core::{fmt, mem};
 
-use alloc::string::{String, ToString};
+use alloc::{
+    collections::BTreeSet,
+    string::{String, ToString},
+};
 
 use log::debug;
 use thiserror::Error;
@@ -169,13 +172,38 @@ impl MaildirCoroutine for MaildirEntryCopy {
                 },
                 Some(MaildirReply::Copy),
             ) => {
+                let paths = BTreeSet::from([tmp_path.clone()]);
+                self.state = State::SyncTmp {
+                    id: mem::take(id),
+                    tmp_path: mem::take(tmp_path),
+                    final_path: mem::take(final_path),
+                };
+                MaildirCoroutineState::Yielded(MaildirYield::WantsFileSync(paths))
+            }
+            (
+                State::SyncTmp {
+                    id,
+                    tmp_path,
+                    final_path,
+                },
+                Some(MaildirReply::FileSync),
+            ) => {
                 // NOTE: a /tmp target renames onto itself, which POSIX
                 // defines as a successful no-op, as in MaildirEntryStore.
+                let dir = MaildirFsPath::from(final_path.parent().unwrap_or_default());
                 let pairs = vec![(mem::take(tmp_path), mem::take(final_path))];
-                self.state = State::Rename { id: mem::take(id) };
+                self.state = State::Rename {
+                    id: mem::take(id),
+                    dir,
+                };
                 MaildirCoroutineState::Yielded(MaildirYield::WantsRename(pairs))
             }
-            (State::Rename { id }, Some(MaildirReply::Rename)) => {
+            (State::Rename { id, dir }, Some(MaildirReply::Rename)) => {
+                let paths = BTreeSet::from([mem::take(dir)]);
+                self.state = State::SyncDir { id: mem::take(id) };
+                MaildirCoroutineState::Yielded(MaildirYield::WantsDirSync(paths))
+            }
+            (State::SyncDir { id }, Some(MaildirReply::DirSync)) => {
                 debug!("copied entry as {id}");
                 MaildirCoroutineState::Complete(Ok(mem::take(id)))
             }
@@ -215,7 +243,16 @@ enum State {
         tmp_path: MaildirFsPath,
         final_path: MaildirFsPath,
     },
+    SyncTmp {
+        id: String,
+        tmp_path: MaildirFsPath,
+        final_path: MaildirFsPath,
+    },
     Rename {
+        id: String,
+        dir: MaildirFsPath,
+    },
+    SyncDir {
         id: String,
     },
 }
@@ -228,7 +265,9 @@ impl fmt::Display for State {
             Self::ReadPid { .. } => f.write_str("read pid"),
             Self::ReadHostname { .. } => f.write_str("read hostname"),
             Self::Copy { .. } => f.write_str("copy into tmp"),
+            Self::SyncTmp { .. } => f.write_str("sync tmp entry"),
             Self::Rename { .. } => f.write_str("rename into place"),
+            Self::SyncDir { .. } => f.write_str("sync subdirectory"),
         }
     }
 }
@@ -337,6 +376,12 @@ mod tests {
             state => panic!("expected WantsCopy, got {state:?}"),
         };
         match cor.resume(Some(MaildirReply::Copy)) {
+            MaildirCoroutineState::Yielded(MaildirYield::WantsFileSync(paths)) => {
+                assert_eq!(paths, BTreeSet::from([staged.clone()]));
+            }
+            state => panic!("expected WantsFileSync, got {state:?}"),
+        }
+        match cor.resume(Some(MaildirReply::FileSync)) {
             MaildirCoroutineState::Yielded(MaildirYield::WantsRename(pairs)) => {
                 let (from, to) = &pairs[0];
                 assert_eq!(from, &staged);
@@ -350,6 +395,12 @@ mod tests {
             state => panic!("expected WantsRename, got {state:?}"),
         }
         match cor.resume(Some(MaildirReply::Rename)) {
+            MaildirCoroutineState::Yielded(MaildirYield::WantsDirSync(paths)) => {
+                assert_eq!(paths, BTreeSet::from([MaildirFsPath::from("root/dst/cur")]));
+            }
+            state => panic!("expected WantsDirSync, got {state:?}"),
+        }
+        match cor.resume(Some(MaildirReply::DirSync)) {
             MaildirCoroutineState::Complete(Ok(id)) => assert!(id.starts_with("1."), "got {id}"),
             state => panic!("expected Complete(Ok), got {state:?}"),
         }

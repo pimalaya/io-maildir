@@ -24,7 +24,7 @@
 use core::{fmt, mem};
 
 use alloc::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     string::{String, ToString},
     vec::Vec,
 };
@@ -58,7 +58,7 @@ pub struct MaildirEntryStoreOutput {
 }
 
 /// Stores a new entry in a Maildir via the tmp → cur/new rename
-/// dance.
+/// dance, the entry synced before the rename and its subdirectory after.
 #[derive(Debug)]
 pub struct MaildirEntryStore {
     maildir: Maildir,
@@ -140,6 +140,22 @@ impl MaildirCoroutine for MaildirEntryStore {
                 },
                 Some(MaildirReply::FileCreate),
             ) => {
+                let paths = BTreeSet::from([tmp_path.clone()]);
+                self.state = State::SyncTmp {
+                    tmp_path: mem::take(tmp_path),
+                    final_path: mem::take(final_path),
+                    id: mem::take(id),
+                };
+                MaildirCoroutineState::Yielded(MaildirYield::WantsFileSync(paths))
+            }
+            (
+                State::SyncTmp {
+                    tmp_path,
+                    final_path,
+                    id,
+                },
+                Some(MaildirReply::FileSync),
+            ) => {
                 let tmp_path = mem::take(tmp_path);
                 let final_path = mem::take(final_path);
                 let id = mem::take(id);
@@ -148,6 +164,14 @@ impl MaildirCoroutine for MaildirEntryStore {
                 MaildirCoroutineState::Yielded(MaildirYield::WantsRename(pairs))
             }
             (State::Rename { final_path, id }, Some(MaildirReply::Rename)) => {
+                let paths = BTreeSet::from([self.maildir.subdir(&self.subdir)]);
+                self.state = State::SyncDir {
+                    final_path: mem::take(final_path),
+                    id: mem::take(id),
+                };
+                MaildirCoroutineState::Yielded(MaildirYield::WantsDirSync(paths))
+            }
+            (State::SyncDir { final_path, id }, Some(MaildirReply::DirSync)) => {
                 let final_path = mem::take(final_path);
                 let id = mem::take(id);
                 debug!("stored entry {id}");
@@ -183,7 +207,16 @@ enum State {
         final_path: MaildirFsPath,
         id: String,
     },
+    SyncTmp {
+        tmp_path: MaildirFsPath,
+        final_path: MaildirFsPath,
+        id: String,
+    },
     Rename {
+        final_path: MaildirFsPath,
+        id: String,
+    },
+    SyncDir {
         final_path: MaildirFsPath,
         id: String,
     },
@@ -197,7 +230,9 @@ impl fmt::Display for State {
             Self::ReadPid { .. } => f.write_str("read pid"),
             Self::ReadHostname { .. } => f.write_str("read hostname"),
             Self::CreateTmp { .. } => f.write_str("create tmp entry"),
+            Self::SyncTmp { .. } => f.write_str("sync tmp entry"),
             Self::Rename { .. } => f.write_str("rename into place"),
+            Self::SyncDir { .. } => f.write_str("sync subdirectory"),
         }
     }
 }
@@ -231,15 +266,32 @@ mod tests {
             MaildirCoroutineState::Yielded(MaildirYield::WantsHostname) => {}
             state => panic!("expected WantsHostname, got {state:?}"),
         }
-        match cor.resume(Some(MaildirReply::Hostname(String::from("host")))) {
-            MaildirCoroutineState::Yielded(MaildirYield::WantsFileCreate(_)) => {}
+        let tmp = match cor.resume(Some(MaildirReply::Hostname(String::from("host")))) {
+            MaildirCoroutineState::Yielded(MaildirYield::WantsFileCreate(files)) => {
+                files.into_keys().next().unwrap()
+            }
             state => panic!("expected WantsFileCreate, got {state:?}"),
-        }
+        };
+        assert!(tmp.as_str().starts_with("root/tmp/1."), "got {tmp}");
         match cor.resume(Some(MaildirReply::FileCreate)) {
-            MaildirCoroutineState::Yielded(MaildirYield::WantsRename(_)) => {}
+            MaildirCoroutineState::Yielded(MaildirYield::WantsFileSync(paths)) => {
+                assert_eq!(paths, BTreeSet::from([tmp.clone()]));
+            }
+            state => panic!("expected WantsFileSync, got {state:?}"),
+        }
+        match cor.resume(Some(MaildirReply::FileSync)) {
+            MaildirCoroutineState::Yielded(MaildirYield::WantsRename(pairs)) => {
+                assert_eq!(pairs[0].0, tmp);
+            }
             state => panic!("expected WantsRename, got {state:?}"),
         }
         match cor.resume(Some(MaildirReply::Rename)) {
+            MaildirCoroutineState::Yielded(MaildirYield::WantsDirSync(paths)) => {
+                assert_eq!(paths, BTreeSet::from([MaildirFsPath::from("root/new")]));
+            }
+            state => panic!("expected WantsDirSync, got {state:?}"),
+        }
+        match cor.resume(Some(MaildirReply::DirSync)) {
             MaildirCoroutineState::Complete(Ok(out)) => {
                 assert!(out.id.starts_with("1."));
                 assert!(out.path.as_str().contains("/new/"));

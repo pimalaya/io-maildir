@@ -4,7 +4,7 @@
 
 Every Maildir operation is a resumable state machine that computes the next filesystem or environment operation and yields a request for it, instead of performing the operation itself. The caller performs the request and resumes the coroutine with the answer. This keeps the whole Maildir logic in a no_std core usable from a blocking driver, an async runtime or an in-memory test harness, with no I/O baked in.
 
-The vocabulary lives in the coroutine module: the MaildirCoroutine trait, the MaildirYield request enum (filesystem create/read/exists/rename/copy/remove plus the time/pid/hostname environment inputs), the MaildirReply answer enum and the two-variant MaildirCoroutineState. The maildir_try! macro is the coroutine equivalent of the question-mark operator, forwarding yields and short-circuiting on error.
+The vocabulary lives in the coroutine module: the MaildirCoroutine trait, the MaildirYield request enum (filesystem create/read/exists/rename/copy/remove/sync plus the time/pid/hostname environment inputs), the MaildirReply answer enum and the two-variant MaildirCoroutineState. The maildir_try! macro is the coroutine equivalent of the question-mark operator, forwarding yields and short-circuiting on error.
 
 ## Concepts as modules
 

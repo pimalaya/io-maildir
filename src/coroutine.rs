@@ -106,6 +106,15 @@ pub enum MaildirYield {
     /// [`MaildirReply::Copy`].
     WantsCopy(Vec<(MaildirFsPath, MaildirFsPath)>),
 
+    /// Driver must flush each file to stable storage and resume with
+    /// [`MaildirReply::FileSync`].
+    WantsFileSync(BTreeSet<MaildirFsPath>),
+
+    /// Driver must flush each directory to stable storage, so the names
+    /// it holds survive a power cut, and resume with
+    /// [`MaildirReply::DirSync`].
+    WantsDirSync(BTreeSet<MaildirFsPath>),
+
     /// Driver must supply the current Unix time and resume with
     /// [`MaildirReply::Time`].
     WantsTime,
@@ -151,6 +160,12 @@ pub enum MaildirReply {
 
     /// Acknowledgement of [`MaildirYield::WantsCopy`].
     Copy,
+
+    /// Acknowledgement of [`MaildirYield::WantsFileSync`].
+    FileSync,
+
+    /// Acknowledgement of [`MaildirYield::WantsDirSync`].
+    DirSync,
 
     /// Answer to [`MaildirYield::WantsTime`].
     Time {

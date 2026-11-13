@@ -71,7 +71,45 @@ pub fn serialize_dovecot_keywords(table: &BTreeMap<char, String>) -> String {
     out
 }
 
-/// Returns the slot letter `table` already names `keyword` by, if any.
+/// Rewrites a `dovecot-keywords` file content so its slots `a..z` are
+/// those of `table`, the lines of any other slot kept as they are.
+///
+/// Returns `None` when a line is no `<index> <name>` one: the slot it
+/// stands for is unknown, so the file is not safe to rewrite.
+pub fn rewrite_dovecot_keywords(text: &str, table: &BTreeMap<char, String>) -> Option<String> {
+    let mut out = String::new();
+    let mut rest = table.clone();
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let (idx, _) = trimmed.split_once(char::is_whitespace)?;
+        let n = idx.parse::<u32>().ok()?;
+
+        if n >= SLOT_COUNT as u32 {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+
+        let letter = (SLOT_MIN + n as u8) as char;
+        if let Some(name) = rest.remove(&letter) {
+            let slot = BTreeMap::from([(letter, name)]);
+            out.push_str(&serialize_dovecot_keywords(&slot));
+        }
+    }
+
+    out.push_str(&serialize_dovecot_keywords(&rest));
+
+    Some(out)
+}
+
+/// Returns the slot letter `table` already names `keyword` by, if any,
+/// names compared without case.
 ///
 /// The read counterpart of [`allocate_keyword_slot`], for callers with
 /// nothing to write: a keyword the table does not name is on no message
@@ -79,7 +117,7 @@ pub fn serialize_dovecot_keywords(table: &BTreeMap<char, String>) -> String {
 pub fn keyword_slot(table: &BTreeMap<char, String>, keyword: &str) -> Option<char> {
     table
         .iter()
-        .find(|(_, name)| name.as_str() == keyword)
+        .find(|(_, name)| name.eq_ignore_ascii_case(keyword))
         .map(|(letter, _)| *letter)
 }
 
@@ -159,6 +197,16 @@ mod tests {
         let mut table = BTreeMap::new();
         table.insert('a', "Work".to_string());
         assert_eq!(allocate_keyword_slot(&mut table, "Work"), Some('a'));
+        assert_eq!(table.len(), 1);
+    }
+
+    #[test]
+    fn a_name_is_found_whatever_its_case() {
+        let mut table = BTreeMap::new();
+        table.insert('a', "$Forwarded".to_string());
+
+        assert_eq!(keyword_slot(&table, "$forwarded"), Some('a'));
+        assert_eq!(allocate_keyword_slot(&mut table, "$FORWARDED"), Some('a'));
         assert_eq!(table.len(), 1);
     }
 

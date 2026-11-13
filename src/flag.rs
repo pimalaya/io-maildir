@@ -62,6 +62,13 @@ pub(crate) fn has_foreign_info(file_name: &str) -> bool {
     }
 }
 
+/// Returns `true` when `keyword` reads back as written from a
+/// `dovecot-keywords` file or a keyword header: not empty, not padded
+/// with whitespace, no control character.
+pub(crate) fn is_valid_keyword(keyword: &str) -> bool {
+    !keyword.is_empty() && keyword.trim() == keyword && !keyword.contains(char::is_control)
+}
+
 impl From<&MaildirFsPath> for MaildirFlags {
     fn from(path: &MaildirFsPath) -> Self {
         let Some(file_name) = path.file_name() else {

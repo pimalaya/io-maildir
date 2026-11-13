@@ -34,7 +34,8 @@ pub enum MaildirDeleteError {
     /// A reply arrived that does not match the awaited step.
     #[error("Maildir delete failed: unexpected arg {0:?}")]
     UnexpectedArg(Option<MaildirReply>),
-    /// The name resolves to the store root or outside it.
+    /// The name resolves to the store root, outside it or onto a
+    /// subdirectory.
     #[error("Maildir delete failed: `{0}` names no folder below the store root")]
     NotAFolder(MaildirPath),
 }
@@ -51,10 +52,10 @@ impl MaildirDelete {
     /// Builds a coroutine recursively removing the Maildir resolved
     /// from `name` under `store`.
     ///
-    /// A name resolving to the root or outside it is refused on the
+    /// A name [`MaildirStore::names_folder`] rejects is refused on the
     /// first resume, nothing removed.
     pub fn new(store: &MaildirStore, name: MaildirPath) -> Self {
-        if !name.names_folder() {
+        if !store.names_folder(&name) {
             return Self {
                 state: State::Refused(name),
             };
@@ -226,6 +227,19 @@ mod tests {
                 let err = expect_complete_err(&mut cor, None);
                 assert!(matches!(err, MaildirDeleteError::NotAFolder(_)), "{name}");
             }
+        }
+    }
+
+    #[test]
+    fn the_subdirectories_of_a_maildir_are_refused_in_the_fs_layout() {
+        for name in ["cur", "new", "tmp", "Work/new", "tmp/Work"] {
+            let mut cor = MaildirDelete::new(&fs_store(), MaildirPath::from(name));
+            let err = expect_complete_err(&mut cor, None);
+            assert!(matches!(err, MaildirDeleteError::NotAFolder(_)), "{name}");
+
+            let mut cor = MaildirDelete::new(&maildirpp_store(), MaildirPath::from(name));
+            let state = cor.resume(None);
+            assert!(matches!(state, MaildirCoroutineState::Yielded(_)), "{name}");
         }
     }
 

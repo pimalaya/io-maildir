@@ -15,7 +15,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `MaildirClient::list_maildirs` skips a folder it cannot read, and a symlink to a folder the walk already reached, with a warning instead of failing or looping.
 
+- `MaildirCreate` and `MaildirClient::load_maildir` refuse a name holding a `.` or `..` segment, or a `cur`, `new` or `tmp` one in the fs layout, instead of resolving it.
+
+- `allocate_keyword_slot` returns `None` for a new keyword that is empty, padded with whitespace or holding a control character.
+
 ### Added
+
+- `MaildirStore::names_folder`, true for a path naming a folder below the store root under the store's layout.
+
+- `MaildirStore::names_maildir`, true for a path naming the store root or a folder below it.
+
+- `MaildirCreateError::NotAFolder`, refusing a name that resolves outside the store or onto a Maildir subdirectory.
+
+- `MaildirClientError::NotAFolder`, the same refusal from `load_maildir`.
 
 - `MaildirRenameError::TargetExists`, refusing a Maildir++ rename whose child would land on an existing folder.
 
@@ -24,6 +36,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MaildirClient::read_readable_entries`, reading a batch of entries while skipping, with a warning, the ones that cannot be read.
 
 ### Fixed
+
+- Fixed `cur`, `new` and `tmp` accepted as folder names in the fs layout.
+
+  Such a name resolved onto the parent's own message directory, so deleting `new` removed the unread messages of the root. Create, load, delete and rename refuse it (`NotAFolder`); Maildir++ keeps the three names.
+
+- Fixed a keyword holding a line break or another control character written to the `dovecot-keywords` file or the keyword header.
+
+  It could rename a slot of the folder or add header lines to the stored message. It is dropped with a warning.
+
+- Fixed a hostname holding `/`, `:` or NUL written as received in a minted entry name: they are written `\057`, `\072` and `\000`.
 
 - Fixed a Maildir++ rename or delete leaving the `.<name>.*` children behind under a parent that no longer exists: they are renamed or removed with it, as the fs layout moves the subtree.
 

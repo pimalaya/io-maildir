@@ -10,13 +10,19 @@ How an entry enters a Maildir: the unique name it is given, and the steps a read
 
 ### Requirement: A unique name minted per delivery
 
-Every entry entering a Maildir SHALL be given a name minted from the current time, a per-process counter, the process id and the hostname. An entry delivered from another Maildir SHALL NOT reuse the source basename: a name carries folder-specific metadata baked into it by other tools, such as mbsync's `,U=<uid>` infix, which is valid only in the folder that wrote it and would corrupt the destination's sync state or silently overwrite a same-named entry there. A copy SHALL return the id it minted, so the caller can name the delivered entry.
+Every entry entering a Maildir SHALL be given a name minted from the current time, a per-process counter, the process id and the hostname. The `/`, `:` and NUL of the hostname SHALL be written `\057`, `\072` and `\000`, so a hostname adds neither a path segment nor an info section to the name. An entry delivered from another Maildir SHALL NOT reuse the source basename: a name carries folder-specific metadata baked into it by other tools, such as mbsync's `,U=<uid>` infix, which is valid only in the folder that wrote it and would corrupt the destination's sync state or silently overwrite a same-named entry there. A copy SHALL return the id it minted, so the caller can name the delivered entry.
 
 #### Scenario: A copy of an mbsync entry
 
 - GIVEN a source entry whose name carries a `,U=<uid>` infix
 - WHEN it is copied into another Maildir
 - THEN the delivered entry carries a freshly minted name with no `,U=` infix, and the source flags
+
+#### Scenario: A hostname holding a slash and a colon
+
+- GIVEN the hostname `mail/host:25`
+- WHEN an entry is delivered
+- THEN its name ends `.mail\057host\07225`
 
 ### Requirement: Delivery is staged in tmp/
 
@@ -61,6 +67,22 @@ Copying SHALL leave the source entry byte for byte as it was, under its own name
 - GIVEN a store whose root is a Maildir holding `Work` and a Maildir++ `.Sent`
 - WHEN `.` is deleted
 - THEN the delete is refused and nothing is removed
+
+### Requirement: A name resolving onto a Maildir subdirectory is refused
+
+In the fs layout a folder sits beside the `cur`, `new` and `tmp` of its parent, so a name holding one of the three as a segment resolves onto the parent's own messages. `MaildirCreate`, `MaildirDelete`, `MaildirRename` and `MaildirClient::load_maildir` SHALL refuse such a name with `NotAFolder` before any filesystem call, as they SHALL refuse a `.` or `..` segment in either layout. Maildir++ SHALL accept the three names, which resolve to `.cur`, `.new` and `.tmp`. `MaildirCreate` and `load_maildir` SHALL accept a name with no segment, the store root, which delete and rename refuse. Names are compared as written.
+
+#### Scenario: A folder named `new` in the fs layout
+
+- GIVEN an fs-layout store whose root is a Maildir holding an unread message
+- WHEN `new` is created, loaded, deleted or renamed, or a folder is renamed to it
+- THEN each call is refused and `new/` holds the message alone
+
+#### Scenario: A folder named `new` in Maildir++
+
+- GIVEN a Maildir++ store
+- WHEN `new` is created
+- THEN `.new` is a Maildir and the root's `new/` is untouched
 
 ### Requirement: A Maildir++ folder is renamed and deleted with its children
 

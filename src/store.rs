@@ -6,7 +6,10 @@
 
 use alloc::string::String;
 
-use crate::path::{MaildirFsPath, MaildirPath};
+use crate::{
+    maildir::{CUR, NEW, TMP},
+    path::{MaildirFsPath, MaildirPath},
+};
 
 /// Root folder holding one or more Maildirs, plus the layout used to
 /// translate logical mailbox names to on-disk paths.
@@ -45,6 +48,23 @@ impl MaildirStore {
         } else {
             self.root.join(path.as_str())
         }
+    }
+
+    /// Returns `true` when `path` names a folder below the root of this
+    /// store: one segment at least, none of them `.` or `..`, nor `cur`,
+    /// `new` or `tmp` in the fs layout.
+    ///
+    /// The fs layout keeps a folder beside the three subdirectories of
+    /// its parent, so such a name resolves onto the parent's messages.
+    pub fn names_folder(&self, path: &MaildirPath) -> bool {
+        let reserved = |name: &str| !self.maildirpp && matches!(name, CUR | NEW | TMP);
+        path.names_folder() && !path.components().any(reserved)
+    }
+
+    /// Returns `true` when `path` names the root of this store or a
+    /// folder below it, see [`Self::names_folder`].
+    pub fn names_maildir(&self, path: &MaildirPath) -> bool {
+        path.components().next().is_none() || self.names_folder(path)
     }
 
     /// Reverse of [`Self::resolve`]: given an on-disk fs path inside
@@ -119,6 +139,45 @@ mod tests {
             maildirpp: true,
         };
         assert_eq!(store.resolve(&MaildirPath::default()).as_str(), "/tmp/m");
+    }
+
+    #[test]
+    fn only_the_fs_layout_reserves_the_subdirectory_names() {
+        let mut store = MaildirStore {
+            root: MaildirFsPath::from("/tmp/m"),
+            maildirpp: false,
+        };
+
+        for path in ["cur", "new", "tmp", "Foo/cur", "new/Foo", "", "..", "Foo/."] {
+            assert!(!store.names_folder(&MaildirPath::from(path)), "{path}");
+        }
+        for path in ["Foo", "Foo/Bar", "New", "current", "Foo/tmp2"] {
+            assert!(store.names_folder(&MaildirPath::from(path)), "{path}");
+        }
+
+        store.maildirpp = true;
+
+        for path in ["cur", "new", "tmp", "Foo/cur", "new/Foo"] {
+            assert!(store.names_folder(&MaildirPath::from(path)), "{path}");
+        }
+        for path in ["", "..", "Foo/."] {
+            assert!(!store.names_folder(&MaildirPath::from(path)), "{path}");
+        }
+    }
+
+    #[test]
+    fn the_root_and_the_folders_below_it_are_maildirs() {
+        for maildirpp in [false, true] {
+            let root = MaildirFsPath::from("/tmp/m");
+            let store = MaildirStore { root, maildirpp };
+
+            for path in ["", "/", "Foo"] {
+                assert!(store.names_maildir(&MaildirPath::from(path)), "{path}");
+            }
+            for path in [".", "..", "Foo/.."] {
+                assert!(!store.names_maildir(&MaildirPath::from(path)), "{path}");
+            }
+        }
     }
 
     #[test]

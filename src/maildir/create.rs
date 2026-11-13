@@ -35,6 +35,9 @@ pub enum MaildirCreateError {
     /// A reply arrived that does not match the awaited step.
     #[error("Maildir create failed: unexpected arg {0:?}")]
     UnexpectedArg(Option<MaildirReply>),
+    /// The name resolves outside the store or onto a subdirectory.
+    #[error("Maildir create failed: `{0}` names neither the store root nor a folder below it")]
+    NotAFolder(MaildirPath),
 }
 
 /// Creates a Maildir with its cur, new and tmp subdirectories.
@@ -46,7 +49,16 @@ pub struct MaildirCreate {
 impl MaildirCreate {
     /// Builds a coroutine creating the Maildir resolved from `name`
     /// under `store`, together with its cur/new/tmp subdirectories.
+    ///
+    /// A name [`MaildirStore::names_maildir`] rejects is refused on the
+    /// first resume, nothing created.
     pub fn new(store: &MaildirStore, name: MaildirPath) -> Self {
+        if !store.names_maildir(&name) {
+            return Self {
+                state: State::Refused(name),
+            };
+        }
+
         let root = store.resolve(&name);
         let cur = root.join(CUR);
         let new = root.join(NEW);
@@ -71,6 +83,10 @@ impl MaildirCoroutine for MaildirCreate {
         arg: Option<MaildirReply>,
     ) -> MaildirCoroutineState<Self::Yield, Self::Return> {
         match (&mut self.state, arg) {
+            (State::Refused(name), None) => {
+                let err = MaildirCreateError::NotAFolder(mem::take(name));
+                MaildirCoroutineState::Complete(Err(err))
+            }
             (State::Start { paths }, None) => {
                 let paths = mem::take(paths);
                 self.state = State::Create;
@@ -90,6 +106,7 @@ impl MaildirCoroutine for MaildirCreate {
 
 #[derive(Debug)]
 enum State {
+    Refused(MaildirPath),
     Start { paths: BTreeSet<MaildirFsPath> },
     Create,
 }
@@ -97,6 +114,7 @@ enum State {
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Refused(_) => f.write_str("refuse"),
             Self::Start { .. } => f.write_str("start"),
             Self::Create => f.write_str("create maildir"),
         }
@@ -153,6 +171,29 @@ mod tests {
         let paths = expect_wants_dir_create(&mut cor);
         assert!(paths.contains(&MaildirFsPath::from("root")));
         assert!(paths.contains(&MaildirFsPath::from("root/cur")));
+    }
+
+    #[test]
+    fn the_subdirectories_of_a_maildir_are_refused_in_the_fs_layout() {
+        for name in ["cur", "new", "tmp", "Work/new", "tmp/Work"] {
+            let mut cor = MaildirCreate::new(&fs_store(), MaildirPath::from(name));
+            let err = expect_complete_err(&mut cor, None);
+            assert!(matches!(err, MaildirCreateError::NotAFolder(_)), "{name}");
+
+            let mut cor = MaildirCreate::new(&maildirpp_store(), MaildirPath::from(name));
+            expect_wants_dir_create(&mut cor);
+        }
+    }
+
+    #[test]
+    fn paths_leaving_the_root_are_refused() {
+        for name in [".", "./", "..", "Foo/..", "../Out"] {
+            for store in [fs_store(), maildirpp_store()] {
+                let mut cor = MaildirCreate::new(&store, MaildirPath::from(name));
+                let err = expect_complete_err(&mut cor, None);
+                assert!(matches!(err, MaildirCreateError::NotAFolder(_)), "{name}");
+            }
+        }
     }
 
     #[test]

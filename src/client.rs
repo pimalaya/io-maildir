@@ -34,7 +34,7 @@ use crate::{
         r#move::*,
         store::*,
     },
-    flag::{KeywordHeader, MaildirFlags, add::*, remove::*, set::*},
+    flag::{KeywordHeader, MaildirFlags, add::*, is_valid_keyword, remove::*, set::*},
     maildir::{CUR, Maildir, MaildirSubdir, NEW, TMP, create::*, delete::*, list::*, rename::*},
     path::{MaildirFsPath, MaildirPath},
     store::MaildirStore,
@@ -49,6 +49,9 @@ pub enum MaildirClientError {
     /// One of the cur/new/tmp subdirectories is missing.
     #[error("missing {0}/ subdirectory at Maildir {1}")]
     MissingSubdir(&'static str, MaildirFsPath),
+    /// The name resolves outside the store or onto a subdirectory.
+    #[error("Maildir load failed: `{0}` names neither the store root nor a folder below it")]
+    NotAFolder(MaildirPath),
     /// The dovecot-keywords load coroutine failed.
     #[error(transparent)]
     MaildirDovecotLoad(#[from] MaildirDovecotLoadError),
@@ -276,11 +279,19 @@ impl MaildirClient {
 
     /// Opens an existing Maildir named `name`, resolving the logical path
     /// through the store and validating its cur/new/tmp subdirs.
+    ///
+    /// A name [`MaildirStore::names_maildir`] rejects is refused.
     pub fn load_maildir(
         &self,
         name: impl Into<MaildirPath>,
     ) -> Result<Maildir, MaildirClientError> {
-        let root = self.store.resolve(&name.into());
+        let name = name.into();
+
+        if !self.store.names_maildir(&name) {
+            return Err(MaildirClientError::NotAFolder(name));
+        }
+
+        let root = self.store.resolve(&name);
 
         if !Path::new(root.as_str()).is_dir() {
             return Err(MaildirClientError::NotDir(root));
@@ -583,19 +594,18 @@ impl MaildirClient {
         if let Some(header) = self.keywords_header {
             let separator = header.separator();
             // NOTE: such a keyword would split into several corrupted
-            // ones on read-back, so dropping beats corrupting.
+            // ones, or into header lines, so dropping beats corrupting.
             let safe: Vec<&String> = keywords
                 .iter()
                 .filter(|k| {
-                    if k.contains(separator) {
+                    if is_valid_keyword(k) && !k.contains(separator) {
+                        true
+                    } else {
                         log::warn!(
-                            "keyword `{k}` contains header separator `{separator}`; \
-                             dropping from {} header",
+                            "keyword {k:?} would not read back from the {} header, dropping it",
                             header.header_name()
                         );
                         false
-                    } else {
-                        true
                     }
                 })
                 .collect();
@@ -624,7 +634,7 @@ impl MaildirClient {
                     }
                     None => {
                         log::warn!(
-                            "dovecot-keywords table full, dropping keyword {keyword:?} at {}",
+                            "no dovecot-keywords slot for keyword {keyword:?} at {}, dropping it",
                             maildir.path()
                         );
                     }
@@ -836,7 +846,7 @@ impl MaildirClient {
                 }
                 None => {
                     log::warn!(
-                        "dovecot-keywords table full; dropping keyword `{keyword}` at {}",
+                        "no dovecot-keywords slot for keyword {keyword:?} at {}, dropping it",
                         maildir.path()
                     );
                 }

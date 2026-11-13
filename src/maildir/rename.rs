@@ -38,7 +38,8 @@ pub enum MaildirRenameError {
     /// A reply arrived that does not match the awaited step.
     #[error("Maildir rename failed: unexpected arg {0:?}")]
     UnexpectedArg(Option<MaildirReply>),
-    /// A name resolves to the store root or outside it.
+    /// A name resolves to the store root, outside it or onto a
+    /// subdirectory.
     #[error("Maildir rename failed: `{0}` names no folder below the store root")]
     NotAFolder(MaildirPath),
     /// A Maildir++ folder the rename would land on already exists.
@@ -60,10 +61,11 @@ impl MaildirRename {
     /// Builds a coroutine renaming the Maildir at `from` to `to`, both
     /// logical mailbox paths resolved through `store`.
     ///
-    /// A name resolving to the root or outside it is refused on the
+    /// A name [`MaildirStore::names_folder`] rejects is refused on the
     /// first resume, nothing renamed.
     pub fn new(store: &MaildirStore, from: MaildirPath, to: MaildirPath) -> Self {
-        if let Some(name) = [&from, &to].into_iter().find(|name| !name.names_folder()) {
+        let mut names = [&from, &to].into_iter();
+        if let Some(name) = names.find(|name| !store.names_folder(name)) {
             return Self {
                 state: State::Refused(name.clone()),
             };
@@ -323,6 +325,19 @@ mod tests {
                 let err = expect_complete_err(&mut cor, None);
                 assert!(matches!(err, MaildirRenameError::NotAFolder(_)), "{to}");
             }
+        }
+    }
+
+    #[test]
+    fn the_subdirectories_of_a_maildir_are_refused_in_the_fs_layout() {
+        for (from, to) in [("cur", "Kept"), ("Work/tmp", "Kept"), ("Work", "new")] {
+            let from = MaildirPath::from(from);
+            let mut cor = MaildirRename::new(&fs_store(), from.clone(), MaildirPath::from(to));
+            let err = expect_complete_err(&mut cor, None);
+            assert!(matches!(err, MaildirRenameError::NotAFolder(_)), "{to}");
+
+            let mut cor = MaildirRename::new(&maildirpp_store(), from, MaildirPath::from(to));
+            expect_wants_root_read(&mut cor);
         }
     }
 

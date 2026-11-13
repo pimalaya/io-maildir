@@ -9,6 +9,8 @@ use alloc::{
     string::{String, ToString},
 };
 
+use crate::flag::is_valid_keyword;
+
 const SLOT_MIN: u8 = b'a';
 const SLOT_COUNT: u8 = 26;
 
@@ -49,7 +51,8 @@ pub fn parse_dovecot_keywords(text: &str) -> BTreeMap<char, String> {
 
 /// Serialises a slot table back into the `dovecot-keywords` line
 /// format. Slot indices are written in ascending order regardless of
-/// the input ordering, so the output is deterministic.
+/// the input ordering, so the output is deterministic. A name holding
+/// a line feed is skipped: it would read back as several slots.
 pub fn serialize_dovecot_keywords(table: &BTreeMap<char, String>) -> String {
     let mut out = String::new();
 
@@ -57,6 +60,10 @@ pub fn serialize_dovecot_keywords(table: &BTreeMap<char, String>) -> String {
         let Some(n) = letter_to_slot(*letter) else {
             continue;
         };
+
+        if name.contains('\n') {
+            continue;
+        }
 
         let _ = writeln!(out, "{n} {name}");
     }
@@ -77,10 +84,16 @@ pub fn keyword_slot(table: &BTreeMap<char, String>, keyword: &str) -> Option<cha
 }
 
 /// Returns the lowest free slot if `keyword` is not yet known, or the
-/// existing letter if it is. Returns `None` when every slot is taken.
+/// existing letter if it is. Returns `None` when every slot is taken,
+/// or when a new `keyword` would not read back as written: empty,
+/// padded with whitespace or holding a control character.
 pub fn allocate_keyword_slot(table: &mut BTreeMap<char, String>, keyword: &str) -> Option<char> {
     if let Some(letter) = keyword_slot(table, keyword) {
         return Some(letter);
+    }
+
+    if !is_valid_keyword(keyword) {
+        return None;
     }
 
     for n in 0..SLOT_COUNT {
@@ -155,6 +168,35 @@ mod tests {
         table.insert('a', "Work".to_string());
         table.insert('c', "Personal".to_string());
         assert_eq!(allocate_keyword_slot(&mut table, "New"), Some('b'));
+    }
+
+    #[test]
+    fn allocate_refuses_a_keyword_that_would_not_read_back() {
+        let mut table = BTreeMap::new();
+        table.insert('a', "Work".to_string());
+
+        for keyword in [
+            "", " ", " x", "x ", "x\n0 y", "x\r\ny", "x\ty", "x\0", "x\u{85}y",
+        ] {
+            assert_eq!(allocate_keyword_slot(&mut table, keyword), None);
+        }
+
+        assert_eq!(serialize_dovecot_keywords(&table), "0 Work\n");
+        assert_eq!(allocate_keyword_slot(&mut table, "Project X"), Some('b'));
+    }
+
+    #[test]
+    fn allocate_returns_the_slot_of_a_name_the_file_already_holds() {
+        let mut table = parse_dovecot_keywords("0 odd\tname\n");
+        assert_eq!(allocate_keyword_slot(&mut table, "odd\tname"), Some('a'));
+    }
+
+    #[test]
+    fn serialize_skips_a_name_holding_a_line_break() {
+        let mut table = BTreeMap::new();
+        table.insert('a', "x\n0 y".to_string());
+        table.insert('b', "Work".to_string());
+        assert_eq!(serialize_dovecot_keywords(&table), "1 Work\n");
     }
 
     #[test]

@@ -45,14 +45,26 @@ pub static INFORMATIONAL_SUFFIX_SEPARATOR: char = ';';
 static ID_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 /// Mints a fresh Maildir unique name following the delivery
-/// convention: `{secs}.#{counter:x}M{nanos}P{pid}.{hostname}`.
+/// convention: `{secs}.#{counter:x}M{nanos}P{pid}.{hostname}`, the `/`,
+/// `:` and NUL of the hostname written `\057`, `\072` and `\000`.
 ///
 /// Used by the store, copy and move coroutines so a relocated entry
 /// never reuses the source basename, which may carry foreign,
 /// folder-specific metadata such as mbsync's `,U=<uid>` infix.
 pub(crate) fn mint_id(secs: u64, nanos: u32, pid: u32, hostname: &str) -> String {
     let counter = ID_COUNTER.fetch_add(1, Ordering::AcqRel);
-    format!("{secs}.#{counter:x}M{nanos}P{pid}.{hostname}")
+    let mut id = format!("{secs}.#{counter:x}M{nanos}P{pid}.");
+
+    for c in hostname.chars() {
+        match c {
+            '/' => id.push_str("\\057"),
+            ':' => id.push_str("\\072"),
+            '\0' => id.push_str("\\000"),
+            c => id.push(c),
+        }
+    }
+
+    id
 }
 
 /// A Maildir entry: on-disk path, body bytes and flags.
@@ -180,5 +192,17 @@ impl From<MaildirFsPath> for MaildirEntry {
 impl From<MaildirEntry> for MaildirFsPath {
     fn from(entry: MaildirEntry) -> Self {
         entry.path
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::entry::mint_id;
+
+    #[test]
+    fn a_hostname_adds_no_path_segment_nor_info_section_to_the_id() {
+        let id = mint_id(1, 2, 3, "mail/host:25\0x");
+        let (_, hostname) = id.split_once("P3.").unwrap();
+        assert_eq!(hostname, "mail\\057host\\07225\\000x");
     }
 }

@@ -81,3 +81,19 @@ With `dovecot_keywords` set, a copy or a move across Maildirs SHALL rename the k
 - GIVEN a source naming `a` `$Important` and `c` `Project X`, a target naming `a` `$Junk`, and an entry `:2,FSac` in the source
 - WHEN it is copied to the target
 - THEN the copy reads `\Flagged \Seen $Important Project X` and the target file still names `a` `$Junk`
+
+### Requirement: A keyword that would not read back is not written
+
+A keyword SHALL reach the `dovecot-keywords` file or the keyword header only when it reads back as written: not empty, not padded with whitespace, holding no control character and, for the header, not holding the header's separator. Any other keyword SHALL be dropped with a warning and the write SHALL go on without it: it gets no slot and no letter, and the header does not name it. A name the `dovecot-keywords` file already holds SHALL keep its slot whatever it holds, so a file another tool wrote is never renumbered. The serialiser SHALL skip a name holding a line feed.
+
+#### Scenario: A keyword holding a line break
+
+- GIVEN a `dovecot-keywords` file naming `a` `$Junk`
+- WHEN a message is stored with the keywords `Work` and `x<LF>0 $NotJunk`
+- THEN the file reads `0 $Junk` then `1 Work`, and the message carries `Work` alone
+
+#### Scenario: A keyword holding a header line
+
+- GIVEN a client writing keywords to `X-Keywords`
+- WHEN a message is stored with the keywords `Work` and `x<CR><LF>Bcc: eve@example.org`
+- THEN the message gains `X-Keywords: Work` and no other line

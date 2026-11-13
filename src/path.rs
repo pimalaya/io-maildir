@@ -188,8 +188,8 @@ impl MaildirPath {
     /// one segment at least, none of them `.` or `..`.
     ///
     /// Any other path resolves to the root itself or outside it (in
-    /// Maildir++, `.` resolves to `<root>/..`), so the destructive
-    /// coroutines refuse it.
+    /// Maildir++, `.` resolves to `<root>/..`). The layout adds its own
+    /// rules, see [`crate::store::MaildirStore::names_folder`].
     pub fn names_folder(&self) -> bool {
         let mut components = self.components().peekable();
         components.peek().is_some() && components.all(|c| c != "." && c != "..")

@@ -284,16 +284,8 @@ mod tests {
             "root/src/cur/1700000000.abc.host,U=999:2,FS",
         ));
         entries.insert(MaildirFsPath::from("root/src/cur"), set);
-        match cor.resume(Some(MaildirReply::DirRead(entries))) {
-            MaildirCoroutineState::Yielded(MaildirYield::WantsFileExists(paths)) => {
-                assert_eq!(paths.len(), 1);
-                let mut exists = BTreeMap::new();
-                exists.insert(paths.iter().next().unwrap().clone(), true);
-                match cor.resume(Some(MaildirReply::FileExists(exists))) {
-                    MaildirCoroutineState::Yielded(MaildirYield::WantsTime) => {}
-                    state => panic!("expected WantsTime, got {state:?}"),
-                }
-            }
+        match cor.resume(Some(MaildirReply::files(entries))) {
+            MaildirCoroutineState::Yielded(MaildirYield::WantsTime) => {}
             state => panic!("expected WantsTime, got {state:?}"),
         }
         match cor.resume(Some(MaildirReply::Time { secs: 1, nanos: 2 })) {

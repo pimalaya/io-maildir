@@ -27,7 +27,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `keyword_slot` and `allocate_keyword_slot` match a keyword to a name without regard to ASCII case.
 
+- `MaildirReply::DirRead` gives each entry of a directory with its `MaildirFileKind`, instead of the entry paths alone.
+
+  A driver other than `MaildirClient` has to report the kind of what it lists.
+
+- `MaildirEntryList` lists from one request, the stat of every entry gone, and `MaildirEntryLocate` no longer confirms its candidates with a second probe.
+
+- `MaildirEntryLocate` probes `cur/<id>` along with `new/<id>` and `tmp/<id>`, so a complete basename costs one request and an exact name wins over a scanned one.
+
 ### Added
+
+- `MaildirClient::skip_sync`, acknowledging the sync requests without flushing.
+
+  Off by default. On, a bulk import no longer pays two flushes per delivery, and a power cut may lose the entries delivered shortly before it.
+
+- `MaildirFileKind`, the kind of a directory entry: file, directory, other or gone while read.
+
+- I/O-free `MaildirEntriesLocate` coroutine, locating many entries from one read of the Maildir.
+
+- `MaildirClient::locate_entries`, running it.
+
+- `MaildirEntryListError::Unstable`, failing a listing whose every read held a name gone meanwhile.
 
 - `MaildirYield::WantsFileSync` and `MaildirReply::FileSync`, asking the driver to flush files to stable storage.
 
@@ -52,6 +72,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MaildirClient::read_readable_entries`, reading a batch of entries while skipping, with a warning, the ones that cannot be read.
 
 ### Fixed
+
+- Fixed a listing silently leaving out an entry renamed while it ran.
+
+  The kind of an entry comes with the directory read, so no stat pass can miss a name another program changed in between; a name still reported gone has the directories read again.
 
 - Fixed a store, copy or move reported done before it reached stable storage.
 

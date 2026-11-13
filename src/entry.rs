@@ -12,6 +12,7 @@ pub mod get;
 pub mod headers;
 pub mod list;
 pub mod locate;
+pub mod locate_many;
 pub mod r#move;
 pub mod store;
 
@@ -38,6 +39,10 @@ pub static INFORMATIONAL_SUFFIX_SEPARATOR: char = ':';
 /// reserved.
 #[cfg(windows)]
 pub static INFORMATIONAL_SUFFIX_SEPARATOR: char = ';';
+
+/// How many times the subdirectories are read while a name they list
+/// turns out gone, before a listing or a lookup gives up.
+pub(crate) const MAX_DIR_READS: u8 = 3;
 
 /// Process-wide counter disambiguating ids minted within the same
 /// clock tick. Shared by every delivery site (store, copy, move) so

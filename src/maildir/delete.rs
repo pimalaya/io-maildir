@@ -17,7 +17,10 @@
 
 use core::{fmt, mem};
 
-use alloc::{collections::BTreeSet, format};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    format,
+};
 
 use log::debug;
 use thiserror::Error;
@@ -98,7 +101,7 @@ impl MaildirCoroutine for MaildirDelete {
                 let path = mem::take(path);
                 let prefix = format!("{path}.");
                 let mut paths = BTreeSet::from([path]);
-                let children = entries.into_values().flatten();
+                let children = entries.into_values().flat_map(BTreeMap::into_keys);
                 paths.extend(children.filter(|name| name.as_str().starts_with(&prefix)));
                 self.state = State::Remove;
                 MaildirCoroutineState::Yielded(MaildirYield::WantsDirRemove(paths))
@@ -146,7 +149,7 @@ impl fmt::Display for State {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{collections::BTreeMap, vec::Vec};
+    use alloc::vec::Vec;
 
     use crate::maildir::delete::*;
 
@@ -203,7 +206,7 @@ mod tests {
 
         let names = names
             .iter()
-            .map(|name| MaildirFsPath::from(*name))
+            .map(|name| (MaildirFsPath::from(*name), MaildirFileKind::Dir))
             .collect();
         let entries = BTreeMap::from([(MaildirFsPath::from("root"), names)]);
         expect_wants_dir_remove_after(cor, MaildirReply::DirRead(entries))

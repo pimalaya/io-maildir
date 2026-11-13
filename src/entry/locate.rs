@@ -29,7 +29,7 @@ use thiserror::Error;
 
 use crate::{
     coroutine::*,
-    entry::MaildirEntry,
+    entry::{INFORMATIONAL_SUFFIX_SEPARATOR, MAX_DIR_READS},
     flag::MaildirFlags,
     maildir::{Maildir, MaildirSubdir},
     path::MaildirFsPath,
@@ -58,6 +58,10 @@ pub struct MaildirEntryLocateOutput {
 }
 
 /// Locates an entry by exact logical ID or complete basename.
+///
+/// A complete basename is probed in `new/`, `tmp/` then `cur/`; on a
+/// miss `new/` and `cur/` are read once and matched by logical ID, and
+/// read again while a matching name is reported gone.
 #[derive(Clone, Debug)]
 pub struct MaildirEntryLocate {
     maildir: Maildir,
@@ -74,6 +78,25 @@ impl MaildirEntryLocate {
             state: State::Start,
         }
     }
+
+    /// The paths the id has as a complete name, in lookup order.
+    fn exact_paths(&self) -> [(MaildirFsPath, MaildirSubdir); 3] {
+        [
+            (self.maildir.new().join(&self.id), MaildirSubdir::New),
+            (self.maildir.tmp().join(&self.id), MaildirSubdir::Tmp),
+            (self.maildir.cur().join(&self.id), MaildirSubdir::Cur),
+        ]
+    }
+
+    /// Asks for the `reads`th read of `new/` and `cur/`.
+    fn read(
+        &mut self,
+        reads: u8,
+    ) -> MaildirCoroutineState<MaildirYield, <Self as MaildirCoroutine>::Return> {
+        let paths = BTreeSet::from([self.maildir.new(), self.maildir.cur()]);
+        self.state = State::Read { reads };
+        MaildirCoroutineState::Yielded(MaildirYield::WantsDirRead(paths))
+    }
 }
 
 impl MaildirCoroutine for MaildirEntryLocate {
@@ -86,103 +109,49 @@ impl MaildirCoroutine for MaildirEntryLocate {
     ) -> MaildirCoroutineState<Self::Yield, Self::Return> {
         match (&mut self.state, arg) {
             (State::Start, None) => {
-                if self.id.is_empty()
-                    || self.id.starts_with('.')
-                    || self.id.contains('\0')
-                    || self.id.contains('/')
-                    || (cfg!(windows) && (self.id.contains('\\') || self.id.contains(':')))
-                {
+                if !is_entry_name(&self.id) {
                     return MaildirCoroutineState::Complete(Err(
                         MaildirEntryLocateError::NotFound(self.id.clone()),
                     ));
                 }
-                let new_path = self.maildir.new().join(&self.id);
-                let tmp_path = self.maildir.tmp().join(&self.id);
-                let probes = BTreeSet::from_iter([new_path.clone(), tmp_path.clone()]);
-                self.state = State::Probe { new_path, tmp_path };
-                MaildirCoroutineState::Yielded(MaildirYield::WantsFileExists(probes))
+                let probes = self.exact_paths().into_iter().map(|(path, _)| path);
+                self.state = State::Probe;
+                MaildirCoroutineState::Yielded(MaildirYield::WantsFileExists(probes.collect()))
             }
-            (State::Probe { new_path, tmp_path }, Some(MaildirReply::FileExists(probes))) => {
-                if probes.get(new_path).copied().unwrap_or(false) {
-                    let out = MaildirEntryLocateOutput {
-                        path: new_path.clone(),
-                        subdir: MaildirSubdir::New,
-                        flags: MaildirFlags::from(&*new_path),
-                    };
-                    debug!("located entry");
-                    trace!("path: {}", out.path);
-                    return MaildirCoroutineState::Complete(Ok(out));
-                }
+            (State::Probe, Some(MaildirReply::FileExists(probes))) => {
+                let mut exact = self.exact_paths().into_iter();
+                let found = exact.find(|(path, _)| probes.get(path).copied().unwrap_or(false));
 
-                if probes.get(tmp_path).copied().unwrap_or(false) {
-                    let out = MaildirEntryLocateOutput {
-                        path: tmp_path.clone(),
-                        subdir: MaildirSubdir::Tmp,
-                        flags: MaildirFlags::from(&*tmp_path),
-                    };
-                    debug!("located entry");
-                    trace!("path: {}", out.path);
-                    return MaildirCoroutineState::Complete(Ok(out));
-                }
-
-                let paths = BTreeSet::from_iter([self.maildir.new(), self.maildir.cur()]);
-                self.state = State::Read;
-                MaildirCoroutineState::Yielded(MaildirYield::WantsDirRead(paths))
-            }
-            (State::Read, Some(MaildirReply::DirRead(entries))) => {
-                let mut candidates = BTreeMap::new();
-                for (dir, paths) in entries {
-                    let subdir = if dir == self.maildir.new() {
-                        MaildirSubdir::New
-                    } else if dir == self.maildir.cur() {
-                        MaildirSubdir::Cur
-                    } else {
-                        continue;
-                    };
-                    for path in paths {
-                        let Some(name) = path.file_name() else {
-                            continue;
-                        };
-                        if name.starts_with('.') {
-                            continue;
-                        }
-                        if name == self.id
-                            || MaildirEntry::from_path(path.clone()).id() == Some(self.id.as_str())
-                        {
-                            candidates.insert(path, subdir.clone());
-                        }
-                    }
-                }
-                let paths = candidates.keys().cloned().collect();
-                if candidates.is_empty() {
-                    return MaildirCoroutineState::Complete(Err(
-                        MaildirEntryLocateError::NotFound(self.id.clone()),
-                    ));
-                }
-                self.state = State::Candidates { candidates };
-                MaildirCoroutineState::Yielded(MaildirYield::WantsFileExists(paths))
-            }
-            (State::Candidates { candidates }, Some(MaildirReply::FileExists(probes))) => {
-                let found = [MaildirSubdir::New, MaildirSubdir::Cur]
-                    .into_iter()
-                    .find_map(|wanted| {
-                        candidates.iter().find(|(path, subdir)| {
-                            **subdir == wanted && probes.get(path).copied().unwrap_or(false)
-                        })
-                    });
                 if let Some((path, subdir)) = found {
+                    let flags = MaildirFlags::from(&path);
                     let out = MaildirEntryLocateOutput {
-                        path: path.clone(),
-                        subdir: subdir.clone(),
-                        flags: MaildirFlags::from(path),
+                        path,
+                        subdir,
+                        flags,
                     };
                     debug!("located entry");
                     trace!("path: {}", out.path);
-                    MaildirCoroutineState::Complete(Ok(out))
-                } else {
-                    MaildirCoroutineState::Complete(Err(MaildirEntryLocateError::NotFound(
-                        self.id.clone(),
-                    )))
+                    return MaildirCoroutineState::Complete(Ok(out));
+                }
+
+                self.read(1)
+            }
+            (State::Read { reads }, Some(MaildirReply::DirRead(entries))) => {
+                let reads = *reads;
+                let ids = BTreeSet::from([self.id.clone()]);
+                let (mut found, gone) = scan(&self.maildir, &ids, entries);
+
+                match found.remove(&self.id) {
+                    Some(out) => {
+                        debug!("located entry");
+                        trace!("path: {}", out.path);
+                        MaildirCoroutineState::Complete(Ok(out))
+                    }
+                    None if gone && reads < MAX_DIR_READS => self.read(reads + 1),
+                    None => {
+                        let err = MaildirEntryLocateError::NotFound(self.id.clone());
+                        MaildirCoroutineState::Complete(Err(err))
+                    }
                 }
             }
             (_, arg) => {
@@ -196,32 +165,105 @@ impl MaildirCoroutine for MaildirEntryLocate {
 #[derive(Clone, Debug)]
 enum State {
     Start,
-    Probe {
-        new_path: MaildirFsPath,
-        tmp_path: MaildirFsPath,
-    },
-    Read,
-    Candidates {
-        candidates: BTreeMap<MaildirFsPath, MaildirSubdir>,
-    },
+    Probe,
+    Read { reads: u8 },
 }
 
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Start => f.write_str("start"),
-            Self::Probe { .. } => f.write_str("probe new and tmp"),
-            Self::Read => f.write_str("read new and cur"),
-            Self::Candidates { .. } => f.write_str("probe candidates"),
+            Self::Probe => f.write_str("probe new, tmp and cur"),
+            Self::Read { .. } => f.write_str("read new and cur"),
         }
     }
 }
 
+/// Returns `true` when `id` can name an entry: not empty, not hidden and
+/// holding no NUL nor path separator.
+pub(crate) fn is_entry_name(id: &str) -> bool {
+    let reserved = |c| c == '\0' || c == '/' || (cfg!(windows) && (c == '\\' || c == ':'));
+    !id.is_empty() && !id.starts_with('.') && !id.contains(reserved)
+}
+
+/// Finds the best match of each of `ids` among the `entries` of the
+/// subdirectories of `maildir`, and tells whether a matching name was
+/// gone when its kind was read.
+///
+/// A complete name wins over a logical id, then `new/` over `tmp/` over
+/// `cur/`, then the first path in order. `tmp/` matches by complete name
+/// only, and only a regular file matches.
+pub(crate) fn scan(
+    maildir: &Maildir,
+    ids: &BTreeSet<String>,
+    entries: BTreeMap<MaildirFsPath, BTreeMap<MaildirFsPath, MaildirFileKind>>,
+) -> (BTreeMap<String, MaildirEntryLocateOutput>, bool) {
+    let mut best: BTreeMap<&String, (u8, MaildirFsPath, MaildirSubdir)> = BTreeMap::new();
+    let mut gone = false;
+
+    for (dir, names) in entries {
+        let (subdir, rank) = if dir == maildir.new() {
+            (MaildirSubdir::New, 0)
+        } else if dir == maildir.tmp() {
+            (MaildirSubdir::Tmp, 1)
+        } else if dir == maildir.cur() {
+            (MaildirSubdir::Cur, 2)
+        } else {
+            continue;
+        };
+
+        for (path, kind) in names {
+            let Some(name) = path.file_name().filter(|name| !name.starts_with('.')) else {
+                continue;
+            };
+
+            let logical = match name.rsplit_once(INFORMATIONAL_SUFFIX_SEPARATOR) {
+                Some((id, _)) if subdir != MaildirSubdir::Tmp => ids.get(id),
+                _ => None,
+            };
+            let matches = [(ids.get(name), rank), (logical, rank + 3)];
+
+            for (id, rank) in matches {
+                let Some(id) = id else {
+                    continue;
+                };
+
+                if kind == MaildirFileKind::Missing {
+                    gone = true;
+                }
+
+                let held = best.get(id).map(|(rank, path, _)| (*rank, path));
+                if kind == MaildirFileKind::File && held.is_none_or(|held| (rank, &path) < held) {
+                    best.insert(id, (rank, path.clone(), subdir.clone()));
+                }
+            }
+        }
+    }
+
+    let found = best.into_iter().map(|(id, (_, path, subdir))| {
+        let flags = MaildirFlags::from(&path);
+        let out = MaildirEntryLocateOutput {
+            path,
+            subdir,
+            flags,
+        };
+        (id.clone(), out)
+    });
+
+    (found.collect(), gone)
+}
+
 #[cfg(test)]
 mod tests {
-    use alloc::collections::{BTreeMap, BTreeSet};
+    use alloc::{
+        collections::{BTreeMap, BTreeSet},
+        vec::Vec,
+    };
 
     use crate::entry::locate::*;
+
+    const FILE: MaildirFileKind = MaildirFileKind::File;
+    const MISSING: MaildirFileKind = MaildirFileKind::Missing;
 
     fn maildir() -> Maildir {
         Maildir::from_path("root")
@@ -265,7 +307,7 @@ mod tests {
         let mut entries = BTreeMap::new();
         entries.insert(MaildirFsPath::from("root/cur"), BTreeSet::new());
         entries.insert(MaildirFsPath::from("root/new"), BTreeSet::new());
-        let err = match cor.resume(Some(MaildirReply::DirRead(entries))) {
+        let err = match cor.resume(Some(MaildirReply::files(entries))) {
             MaildirCoroutineState::Complete(Err(err)) => err,
             state => panic!("expected NotFound, got {state:?}"),
         };
@@ -368,38 +410,114 @@ mod tests {
     }
 
     #[test]
-    fn vanished_and_nonfile_candidates_are_skipped() {
-        let out = locate_scanned_with_replies(
-            "abc",
-            &[],
-            &["root/cur/abc:2,F", "root/cur/abc:2,S"],
-            &[false, true],
-        );
-        assert_eq!(out.path, MaildirFsPath::from("root/cur/abc:2,S"));
-        assert!(matches!(
-            locate_scanned_result("abc", &[], &["root/cur/abc:2,F"], &[false]),
-            Err(MaildirEntryLocateError::NotFound(_))
-        ));
+    fn candidates_that_are_no_files_are_skipped() {
+        let tree = [
+            ("root/cur/abc:2,F", MaildirFileKind::Dir),
+            ("root/cur/abc:2,R", MaildirFileKind::Other),
+            ("root/cur/abc:2,S", FILE),
+        ];
+        let (out, _) = locate("abc", &[&tree]);
+        assert_eq!(out.unwrap().path, MaildirFsPath::from("root/cur/abc:2,S"));
+
+        let (out, _) = locate("abc", &[&tree[..2]]);
+        assert!(matches!(out, Err(MaildirEntryLocateError::NotFound(_))));
+    }
+
+    #[test]
+    fn a_candidate_gone_while_read_is_located_under_the_name_it_took() {
+        let first = [("root/cur/abc:2,", MISSING)];
+        let second = [("root/cur/abc:2,S", FILE)];
+
+        let (out, requests) = locate("abc", &[&first, &second]);
+        assert_eq!(out.unwrap().path, MaildirFsPath::from("root/cur/abc:2,S"));
+        assert_eq!(requests, 3);
+    }
+
+    #[test]
+    fn a_candidate_that_stays_gone_is_not_found() {
+        let (out, requests) = locate("abc", &[&[("root/cur/abc:2,", MISSING)]]);
+        assert!(matches!(out, Err(MaildirEntryLocateError::NotFound(_))));
+        assert_eq!(requests, 4);
+    }
+
+    #[test]
+    fn a_complete_basename_costs_one_request_and_an_id_two() {
+        let tree = [("root/cur/abc:2,S", FILE), ("root/cur/abd:2,S", FILE)];
+
+        let (out, requests) = locate("abc:2,S", &[&tree]);
+        assert_eq!(out.unwrap().subdir, MaildirSubdir::Cur);
+        assert_eq!(requests, 1);
+
+        let (out, requests) = locate("abc", &[&tree]);
+        assert_eq!(out.unwrap().path, MaildirFsPath::from("root/cur/abc:2,S"));
+        assert_eq!(requests, 2);
+    }
+
+    #[test]
+    fn an_exact_name_wins_over_a_scanned_one() {
+        let tree = [
+            ("root/cur/abc", FILE),
+            ("root/new/abc:2,F", FILE),
+            ("root/tmp/abd", FILE),
+            ("root/cur/abd", FILE),
+        ];
+
+        let (out, _) = locate("abc", &[&tree]);
+        assert_eq!(out.unwrap().path, MaildirFsPath::from("root/cur/abc"));
+        let (out, _) = locate("abd", &[&tree]);
+        assert_eq!(out.unwrap().subdir, MaildirSubdir::Tmp);
+    }
+
+    /// Locates `id` in a Maildir holding the next of `reads` at each
+    /// directory read, returning the outcome and the requests it took.
+    fn locate(
+        id: &str,
+        reads: &[&[(&str, MaildirFileKind)]],
+    ) -> (
+        Result<MaildirEntryLocateOutput, MaildirEntryLocateError>,
+        usize,
+    ) {
+        let mut cor = MaildirEntryLocate::new(maildir(), id);
+        let mut requests = 0;
+        let mut read = 0;
+        let mut arg = None;
+
+        loop {
+            let wants = match cor.resume(arg.take()) {
+                MaildirCoroutineState::Complete(out) => return (out, requests),
+                MaildirCoroutineState::Yielded(wants) => wants,
+            };
+
+            let tree = reads[read.min(reads.len() - 1)];
+            requests += 1;
+
+            arg = Some(match wants {
+                MaildirYield::WantsFileExists(paths) => {
+                    let mut probes = BTreeMap::new();
+                    for path in paths {
+                        let exists = tree.contains(&(path.as_str(), FILE));
+                        probes.insert(path, exists);
+                    }
+                    MaildirReply::FileExists(probes)
+                }
+                MaildirYield::WantsDirRead(dirs) => {
+                    read += 1;
+                    MaildirReply::read(dirs, tree)
+                }
+                wants => panic!("unexpected {wants:?}"),
+            });
+        }
     }
 
     fn locate_error(id: &str, new: &[&str], cur: &[&str]) -> MaildirEntryLocateError {
-        match locate_scanned_result(id, new, cur, &[]) {
+        match locate_scanned_result(id, new, cur) {
             Err(err) => err,
             Ok(out) => panic!("expected NotFound, got {}", out.path),
         }
     }
 
     fn locate_scanned(id: &str, new: &[&str], cur: &[&str]) -> MaildirEntryLocateOutput {
-        locate_scanned_with_replies(id, new, cur, &vec![true; new.len() + cur.len()])
-    }
-
-    fn locate_scanned_with_replies(
-        id: &str,
-        new: &[&str],
-        cur: &[&str],
-        replies: &[bool],
-    ) -> MaildirEntryLocateOutput {
-        locate_scanned_result(id, new, cur, replies)
+        locate_scanned_result(id, new, cur)
             .unwrap_or_else(|err| panic!("expected entry, got {err:?}"))
     }
 
@@ -407,43 +525,10 @@ mod tests {
         id: &str,
         new: &[&str],
         cur: &[&str],
-        replies: &[bool],
     ) -> Result<MaildirEntryLocateOutput, MaildirEntryLocateError> {
-        let mut cor = MaildirEntryLocate::new(maildir(), id);
-        let _ = expect_wants_file_exists(&mut cor);
-        let mut probes = BTreeMap::new();
-        probes.insert(MaildirFsPath::from(alloc::format!("root/new/{id}")), false);
-        probes.insert(MaildirFsPath::from(alloc::format!("root/tmp/{id}")), false);
-        let dirs = match cor.resume(Some(MaildirReply::FileExists(probes))) {
-            MaildirCoroutineState::Yielded(MaildirYield::WantsDirRead(paths)) => paths,
-            state => panic!("expected directory read, got {state:?}"),
-        };
-        assert!(
-            dirs.contains(&MaildirFsPath::from("root/new"))
-                && dirs.contains(&MaildirFsPath::from("root/cur"))
-        );
-        let mut entries = BTreeMap::new();
-        entries.insert(
-            MaildirFsPath::from("root/new"),
-            new.iter().map(|p| MaildirFsPath::from(*p)).collect(),
-        );
-        entries.insert(
-            MaildirFsPath::from("root/cur"),
-            cur.iter().map(|p| MaildirFsPath::from(*p)).collect(),
-        );
-        let candidates = match cor.resume(Some(MaildirReply::DirRead(entries))) {
-            MaildirCoroutineState::Yielded(MaildirYield::WantsFileExists(paths)) => paths,
-            MaildirCoroutineState::Complete(Err(err)) => return Err(err),
-            state => panic!("expected candidate probe, got {state:?}"),
-        };
-        let mut file_reply = BTreeMap::new();
-        for (index, path) in candidates.iter().enumerate() {
-            file_reply.insert(path.clone(), replies.get(index).copied().unwrap_or(true));
-        }
-        match cor.resume(Some(MaildirReply::FileExists(file_reply))) {
-            MaildirCoroutineState::Complete(result) => result,
-            state => panic!("expected completion, got {state:?}"),
-        }
+        let paths = new.iter().chain(cur);
+        let tree: Vec<(&str, MaildirFileKind)> = paths.map(|path| (*path, FILE)).collect();
+        locate(id, &[&tree]).0
     }
 
     #[test]

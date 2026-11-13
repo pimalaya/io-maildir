@@ -21,7 +21,11 @@
 
 use core::{fmt, mem};
 
-use alloc::{collections::BTreeSet, format, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    format,
+    vec::Vec,
+};
 
 use log::debug;
 use thiserror::Error;
@@ -138,7 +142,8 @@ impl MaildirCoroutine for MaildirRename {
                 MaildirCoroutineState::Yielded(MaildirYield::WantsDirRead(paths))
             }
             (State::Siblings { from, to, .. }, Some(MaildirReply::DirRead(entries))) => {
-                let names = entries.into_values().flatten().collect();
+                let names = entries.into_values().flat_map(BTreeMap::into_keys);
+                let names = names.collect();
                 match maildirpp_pairs(mem::take(from), mem::take(to), &names) {
                     Ok(pairs) => {
                         self.state = State::Rename;
@@ -191,9 +196,11 @@ impl fmt::Display for State {
 
 #[cfg(test)]
 mod tests {
-    use alloc::collections::BTreeMap;
-
     use crate::maildir::rename::*;
+
+    fn dir(name: &str) -> (MaildirFsPath, MaildirFileKind) {
+        (MaildirFsPath::from(name), MaildirFileKind::Dir)
+    }
 
     fn fs_store() -> MaildirStore {
         MaildirStore {
@@ -284,7 +291,7 @@ mod tests {
         let names = ["root/.A", "root/.A.Kid", "root/.B.Kid"];
         let entries = BTreeMap::from([(
             MaildirFsPath::from("root"),
-            names.into_iter().map(MaildirFsPath::from).collect(),
+            names.into_iter().map(dir).collect(),
         )]);
         let err = expect_complete_err(&mut cor, Some(MaildirReply::DirRead(entries)));
         assert!(
@@ -305,10 +312,7 @@ mod tests {
         cor: &mut MaildirRename,
         names: &[&str],
     ) -> Vec<(MaildirFsPath, MaildirFsPath)> {
-        let names = names
-            .iter()
-            .map(|name| MaildirFsPath::from(*name))
-            .collect();
+        let names = names.iter().copied().map(dir).collect();
         let entries = BTreeMap::from([(MaildirFsPath::from("root"), names)]);
         match cor.resume(Some(MaildirReply::DirRead(entries))) {
             MaildirCoroutineState::Yielded(MaildirYield::WantsRename(pairs)) => pairs,

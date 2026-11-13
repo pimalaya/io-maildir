@@ -31,6 +31,7 @@ use crate::{
         headers::{inject_header, strip_headers},
         list::*,
         locate::*,
+        locate_many::*,
         r#move::*,
         store::*,
     },
@@ -88,6 +89,9 @@ pub enum MaildirClientError {
     /// The entry-locate coroutine failed.
     #[error(transparent)]
     EntryLocate(#[from] MaildirEntryLocateError),
+    /// The entries-locate coroutine failed.
+    #[error(transparent)]
+    EntriesLocate(#[from] MaildirEntriesLocateError),
     /// The entry-list coroutine failed.
     #[error(transparent)]
     EntryList(#[from] MaildirEntryListError),
@@ -115,6 +119,13 @@ pub struct MaildirClient {
     pub keywords_header: Option<KeywordHeader>,
     /// Header names to strip from message bytes on read.
     pub strip_headers: Vec<String>,
+    /// Acknowledge the sync requests without flushing anything.
+    ///
+    /// Off by default: a delivery reported done is on stable storage, at
+    /// the cost of two flushes each. On, a bulk import runs at the speed
+    /// of the page cache, and a power cut may lose or truncate the
+    /// entries delivered shortly before it.
+    pub skip_sync: bool,
 }
 
 impl MaildirClient {
@@ -129,6 +140,7 @@ impl MaildirClient {
             dovecot_keywords: false,
             keywords_header: None,
             strip_headers: Vec::new(),
+            skip_sync: false,
         }
     }
 
@@ -181,12 +193,13 @@ impl MaildirClient {
                 let mut entries = BTreeMap::new();
                 for path in paths {
                     trace!("read_dir {path}");
-                    let mut names = BTreeSet::new();
+                    let mut names = BTreeMap::new();
                     match fs::read_dir(path.as_str()) {
                         Ok(iter) => {
                             for entry in iter {
                                 let entry = entry.map_err(at(&path))?;
-                                names.insert(MaildirFsPath::from(entry.path()));
+                                let kind = file_kind(&entry);
+                                names.insert(MaildirFsPath::from(entry.path()), kind);
                             }
                         }
                         Err(err) if err.kind() == io::ErrorKind::NotFound => {}
@@ -243,6 +256,7 @@ impl MaildirClient {
                 }
                 MaildirReply::Copy
             }
+            MaildirYield::WantsFileSync(_) if self.skip_sync => MaildirReply::FileSync,
             MaildirYield::WantsFileSync(paths) => {
                 for path in paths {
                     trace!("sync file {path}");
@@ -250,6 +264,7 @@ impl MaildirClient {
                 }
                 MaildirReply::FileSync
             }
+            MaildirYield::WantsDirSync(_) if self.skip_sync => MaildirReply::DirSync,
             MaildirYield::WantsDirSync(paths) => {
                 for path in paths {
                     trace!("sync dir {path}");
@@ -444,6 +459,17 @@ impl MaildirClient {
             flags,
         } = self.run(MaildirEntryLocate::new(maildir, id))?;
         Ok((path, subdir, flags))
+    }
+
+    /// Runs [`MaildirEntriesLocate`] for `ids` in `maildir`: one read of
+    /// the Maildir whatever their number, the ids naming no entry left
+    /// out.
+    pub fn locate_entries(
+        &self,
+        maildir: Maildir,
+        ids: impl IntoIterator<Item = impl ToString>,
+    ) -> Result<BTreeMap<String, MaildirEntryLocateOutput>, MaildirClientError> {
+        self.run(MaildirEntriesLocate::new(maildir, ids))
     }
 
     /// Runs [`MaildirEntryGet`] for `id` in `maildir`; resolves the
@@ -930,14 +956,47 @@ fn is_missing(err: &io::Error) -> bool {
     )
 }
 
+/// The kind of a directory entry, read from the directory itself where
+/// the platform gives it: only a symlink costs a stat, of its target.
+fn file_kind(entry: &fs::DirEntry) -> MaildirFileKind {
+    let file_type = match entry.file_type() {
+        Ok(file_type) => file_type,
+        Err(err) if is_missing(&err) => return MaildirFileKind::Missing,
+        Err(_) => return MaildirFileKind::Other,
+    };
+
+    if file_type.is_file() {
+        return MaildirFileKind::File;
+    }
+
+    if file_type.is_dir() {
+        return MaildirFileKind::Dir;
+    }
+
+    if !file_type.is_symlink() {
+        return MaildirFileKind::Other;
+    }
+
+    let path = entry.path();
+    match fs::metadata(&path) {
+        Ok(meta) if meta.is_file() => MaildirFileKind::File,
+        Ok(meta) if meta.is_dir() => MaildirFileKind::Dir,
+        Err(_) if fs::symlink_metadata(&path).is_err() => MaildirFileKind::Missing,
+        _ => MaildirFileKind::Other,
+    }
+}
+
 /// The children of the folder `path` for the listing walk, `reached`
 /// holding the canonical folders walked so far.
 ///
 /// An unreadable folder or child is skipped with a warning, and so is a
 /// symlink to a folder already reached.
-fn read_folder(path: &MaildirFsPath, reached: &mut BTreeSet<PathBuf>) -> BTreeSet<MaildirFsPath> {
+fn read_folder(
+    path: &MaildirFsPath,
+    reached: &mut BTreeSet<PathBuf>,
+) -> BTreeMap<MaildirFsPath, MaildirFileKind> {
     trace!("read_dir {path}");
-    let mut names = BTreeSet::new();
+    let mut names = BTreeMap::new();
 
     if let Ok(canonical) = fs::canonicalize(path.as_str()) {
         reached.insert(canonical);
@@ -979,7 +1038,7 @@ fn read_folder(path: &MaildirFsPath, reached: &mut BTreeSet<PathBuf>) -> BTreeSe
             }
         }
 
-        names.insert(MaildirFsPath::from(child));
+        names.insert(MaildirFsPath::from(child), file_kind(&entry));
     }
 
     names

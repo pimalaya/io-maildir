@@ -204,12 +204,7 @@ mod tests {
             BTreeSet::from([MaildirFsPath::from("root/new/abc:2,F")]),
         );
         entries.insert(MaildirFsPath::from("root/cur"), BTreeSet::new());
-        assert!(matches!(
-            cor.resume(Some(MaildirReply::DirRead(entries))),
-            MaildirCoroutineState::Yielded(MaildirYield::WantsFileExists(_))
-        ));
-        let candidates = BTreeMap::from([(MaildirFsPath::from("root/new/abc:2,F"), true)]);
-        let pairs = expect_wants_rename(&mut cor, Some(MaildirReply::FileExists(candidates)));
+        let pairs = expect_wants_rename(&mut cor, Some(MaildirReply::files(entries)));
         assert_eq!(
             pairs,
             alloc::vec![("root/new/abc:2,F".into(), "root/new/abc".into())]
@@ -237,12 +232,7 @@ mod tests {
             BTreeSet::from([MaildirFsPath::from("root/new/abc:2,FSx")]),
         );
         entries.insert(MaildirFsPath::from("root/cur"), BTreeSet::new());
-        assert!(matches!(
-            cor.resume(Some(MaildirReply::DirRead(entries))),
-            MaildirCoroutineState::Yielded(MaildirYield::WantsFileExists(_))
-        ));
-        let candidates = BTreeMap::from([(MaildirFsPath::from("root/new/abc:2,FSx"), true)]);
-        let pairs = expect_wants_rename(&mut cor, Some(MaildirReply::FileExists(candidates)));
+        let pairs = expect_wants_rename(&mut cor, Some(MaildirReply::files(entries)));
         assert_eq!(pairs[0].1, MaildirFsPath::from("root/cur/abc:2,Sx"));
     }
 
@@ -267,12 +257,7 @@ mod tests {
             MaildirFsPath::from("root/cur"),
             BTreeSet::from([MaildirFsPath::from("root/cur/abc:2,F")]),
         );
-        assert!(matches!(
-            cor.resume(Some(MaildirReply::DirRead(entries))),
-            MaildirCoroutineState::Yielded(MaildirYield::WantsFileExists(_))
-        ));
-        let candidates = BTreeMap::from([(MaildirFsPath::from("root/cur/abc:2,F"), true)]);
-        let pairs = expect_wants_rename(&mut cor, Some(MaildirReply::FileExists(candidates)));
+        let pairs = expect_wants_rename(&mut cor, Some(MaildirReply::files(entries)));
         assert_eq!(pairs[0].1, MaildirFsPath::from("root/cur/abc:2,"));
     }
 
@@ -296,16 +281,7 @@ mod tests {
         cor: &mut MaildirFlagsRemove,
         arg: Option<MaildirReply>,
     ) -> alloc::vec::Vec<(MaildirFsPath, MaildirFsPath)> {
-        let state = cor.resume(arg);
-        let state = match state {
-            MaildirCoroutineState::Yielded(MaildirYield::WantsFileExists(paths)) => {
-                cor.resume(Some(MaildirReply::FileExists(BTreeMap::from_iter(
-                    paths.into_iter().map(|path| (path, true)),
-                ))))
-            }
-            state => state,
-        };
-        match state {
+        match cor.resume(arg) {
             MaildirCoroutineState::Yielded(MaildirYield::WantsRename(pairs)) => pairs,
             state => panic!("expected WantsRename, got {state:?}"),
         }

@@ -78,8 +78,8 @@ pub enum MaildirYield {
     /// [`MaildirReply::DirExists`].
     WantsDirExists(BTreeSet<MaildirFsPath>),
 
-    /// Driver must list each directory's entries and resume with
-    /// [`MaildirReply::DirRead`].
+    /// Driver must list each directory's entries with their kind and
+    /// resume with [`MaildirReply::DirRead`].
     WantsDirRead(BTreeSet<MaildirFsPath>),
 
     /// Driver must read each file's bytes and resume with
@@ -140,8 +140,9 @@ pub enum MaildirReply {
     /// Answer to [`MaildirYield::WantsDirExists`].
     DirExists(BTreeMap<MaildirFsPath, bool>),
 
-    /// Answer to [`MaildirYield::WantsDirRead`].
-    DirRead(BTreeMap<MaildirFsPath, BTreeSet<MaildirFsPath>>),
+    /// Answer to [`MaildirYield::WantsDirRead`]: per directory, every
+    /// entry path with its kind.
+    DirRead(BTreeMap<MaildirFsPath, BTreeMap<MaildirFsPath, MaildirFileKind>>),
 
     /// Answer to [`MaildirYield::WantsFileRead`].
     FileRead(BTreeMap<MaildirFsPath, Vec<u8>>),
@@ -180,6 +181,51 @@ pub enum MaildirReply {
 
     /// Answer to [`MaildirYield::WantsHostname`].
     Hostname(String),
+}
+
+#[cfg(test)]
+impl MaildirReply {
+    /// Builds a [`Self::DirRead`] whose every entry is a regular file.
+    pub(crate) fn files(entries: BTreeMap<MaildirFsPath, BTreeSet<MaildirFsPath>>) -> Self {
+        let files = |names: BTreeSet<MaildirFsPath>| {
+            let names = names.into_iter();
+            names.map(|name| (name, MaildirFileKind::File)).collect()
+        };
+        let entries = entries.into_iter();
+        Self::DirRead(entries.map(|(dir, names)| (dir, files(names))).collect())
+    }
+
+    /// Builds the [`Self::DirRead`] of `dirs` over the entries of `tree`.
+    pub(crate) fn read(dirs: BTreeSet<MaildirFsPath>, tree: &[(&str, MaildirFileKind)]) -> Self {
+        let children = |dir: &MaildirFsPath| {
+            let entries = tree
+                .iter()
+                .map(|(path, kind)| (MaildirFsPath::from(*path), *kind));
+            entries
+                .filter(|(path, _)| path.parent() == Some(dir.as_str()))
+                .collect()
+        };
+        let mut entries = BTreeMap::new();
+        for dir in dirs {
+            let names = children(&dir);
+            entries.insert(dir, names);
+        }
+        Self::DirRead(entries)
+    }
+}
+
+/// Kind of a directory entry, a symlink counting as what it points to.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum MaildirFileKind {
+    /// A regular file.
+    File,
+    /// A directory.
+    Dir,
+    /// Anything else: a socket, a device, a dangling symlink.
+    Other,
+    /// The entry was listed, then gone when its kind was read: renamed or
+    /// removed meanwhile. A driver reading both at once never reports it.
+    Missing,
 }
 
 /// Coroutine `?`: forwards `Yielded` (via `Into`), short-circuits on `Err`,

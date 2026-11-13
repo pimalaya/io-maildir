@@ -341,16 +341,8 @@ mod tests {
         ));
         entries.insert(MaildirFsPath::from("root/src/cur"), set);
         // Locate completes; the first delivery step asks for time.
-        match cor.resume(Some(MaildirReply::DirRead(entries))) {
-            MaildirCoroutineState::Yielded(MaildirYield::WantsFileExists(paths)) => {
-                assert_eq!(paths.len(), 1);
-                let mut exists = BTreeMap::new();
-                exists.insert(paths.iter().next().unwrap().clone(), true);
-                match cor.resume(Some(MaildirReply::FileExists(exists))) {
-                    MaildirCoroutineState::Yielded(MaildirYield::WantsTime) => {}
-                    state => panic!("expected WantsTime, got {state:?}"),
-                }
-            }
+        match cor.resume(Some(MaildirReply::files(entries))) {
+            MaildirCoroutineState::Yielded(MaildirYield::WantsTime) => {}
             state => panic!("expected WantsTime, got {state:?}"),
         }
         match cor.resume(Some(MaildirReply::Time { secs: 1, nanos: 2 })) {

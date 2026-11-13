@@ -102,7 +102,7 @@ impl MaildirCoroutine for MaildirList {
                 }
 
                 for (_dir, names) in entries {
-                    for path in names {
+                    for path in names.into_keys() {
                         let Some(name) = path.file_name() else {
                             continue;
                         };
@@ -241,13 +241,20 @@ mod tests {
         }
     }
 
+    fn children<const N: usize>(names: [&str; N]) -> BTreeMap<MaildirFsPath, MaildirFileKind> {
+        let names = names.into_iter();
+        names
+            .map(|name| (MaildirFsPath::from(name), MaildirFileKind::Dir))
+            .collect()
+    }
+
     #[test]
     fn empty_root_returns_empty() {
         let mut cor = MaildirList::new(&fs_store());
         expect_wants_dir_read(&mut cor, None);
 
         let mut entries = BTreeMap::new();
-        entries.insert(MaildirFsPath::from("root"), BTreeSet::new());
+        entries.insert(MaildirFsPath::from("root"), children([]));
 
         let probes = expect_wants_dir_exists(&mut cor, Some(MaildirReply::DirRead(entries)));
         let reply = probes.into_iter().map(|p| (p, false)).collect();
@@ -262,7 +269,7 @@ mod tests {
         expect_wants_dir_read(&mut cor, None);
 
         let mut entries = BTreeMap::new();
-        entries.insert(MaildirFsPath::from("root"), BTreeSet::new());
+        entries.insert(MaildirFsPath::from("root"), children([]));
 
         let probes = expect_wants_dir_exists(&mut cor, Some(MaildirReply::DirRead(entries)));
         let reply = probes.into_iter().map(|p| (p, true)).collect();
@@ -278,10 +285,7 @@ mod tests {
         expect_wants_dir_read(&mut cor, None);
 
         let mut entries = BTreeMap::new();
-        entries.insert(
-            MaildirFsPath::from("root"),
-            BTreeSet::from_iter([MaildirFsPath::from("root/Foo")]),
-        );
+        entries.insert(MaildirFsPath::from("root"), children(["root/Foo"]));
 
         let probes = expect_wants_dir_exists(&mut cor, Some(MaildirReply::DirRead(entries)));
         let reply = probes.into_iter().map(|p| (p, true)).collect();
@@ -290,10 +294,7 @@ mod tests {
         assert!(next.contains(&MaildirFsPath::from("root/Foo")));
 
         let mut entries = BTreeMap::new();
-        entries.insert(
-            MaildirFsPath::from("root/Foo"),
-            BTreeSet::from_iter([MaildirFsPath::from("root/Foo/Bar")]),
-        );
+        entries.insert(MaildirFsPath::from("root/Foo"), children(["root/Foo/Bar"]));
 
         let probes = expect_wants_dir_exists(&mut cor, Some(MaildirReply::DirRead(entries)));
         let reply = probes.into_iter().map(|p| (p, true)).collect();
@@ -302,7 +303,7 @@ mod tests {
         assert!(next.contains(&MaildirFsPath::from("root/Foo/Bar")));
 
         let mut entries = BTreeMap::new();
-        entries.insert(MaildirFsPath::from("root/Foo/Bar"), BTreeSet::new());
+        entries.insert(MaildirFsPath::from("root/Foo/Bar"), children([]));
 
         let out = expect_complete_ok(&mut cor, Some(MaildirReply::DirRead(entries)));
         let names: Vec<_> = out.iter().map(|m| m.path().as_str()).collect();
@@ -320,10 +321,7 @@ mod tests {
         let mut entries = BTreeMap::new();
         entries.insert(
             MaildirFsPath::from("root"),
-            BTreeSet::from_iter([
-                MaildirFsPath::from("root/.Hidden"),
-                MaildirFsPath::from("root/Sent"),
-            ]),
+            children(["root/.Hidden", "root/Sent"]),
         );
 
         let probes = expect_wants_dir_exists(&mut cor, Some(MaildirReply::DirRead(entries)));
@@ -339,10 +337,7 @@ mod tests {
         let mut entries = BTreeMap::new();
         entries.insert(
             MaildirFsPath::from("root"),
-            BTreeSet::from_iter([
-                MaildirFsPath::from("root/Foo"),
-                MaildirFsPath::from("root/dovecot-uidlist"),
-            ]),
+            children(["root/Foo", "root/dovecot-uidlist"]),
         );
 
         let probes = expect_wants_dir_exists(&mut cor, Some(MaildirReply::DirRead(entries)));
@@ -368,10 +363,7 @@ mod tests {
         let mut entries = BTreeMap::new();
         entries.insert(
             MaildirFsPath::from("root"),
-            BTreeSet::from_iter([
-                MaildirFsPath::from("root/.Sent"),
-                MaildirFsPath::from("root/Other"),
-            ]),
+            children(["root/.Sent", "root/Other"]),
         );
 
         let probes = expect_wants_dir_exists(&mut cor, Some(MaildirReply::DirRead(entries)));
@@ -394,11 +386,7 @@ mod tests {
         let mut entries = BTreeMap::new();
         entries.insert(
             MaildirFsPath::from("root"),
-            BTreeSet::from_iter([
-                MaildirFsPath::from("root/cur"),
-                MaildirFsPath::from("root/new"),
-                MaildirFsPath::from("root/tmp"),
-            ]),
+            children(["root/cur", "root/new", "root/tmp"]),
         );
 
         let probes = expect_wants_dir_exists(&mut cor, Some(MaildirReply::DirRead(entries)));

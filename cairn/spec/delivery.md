@@ -50,11 +50,19 @@ Every entry entering a Maildir, whether written from a caller's bytes or copied 
 
 A store or a copy SHALL ask the driver to flush the entry under `tmp/` (`WantsFileSync`) before the rename, and to flush the directory it was renamed into (`WantsDirSync`) after it. A move, being a rename alone, SHALL ask for the source and the target directories to be flushed after it. A delivery reported done then survives a power cut, where staging in `tmp/` alone covers a dying process. `MaildirClient` SHALL answer both requests with a sync of the file or directory; where the platform cannot flush a directory, or a read-only file, the request SHALL be acknowledged as it is. Flag writes and folder operations ask for no flush.
 
+Flushing is the default and costs two flushes per delivery, which a bulk import or a first synchronisation of tens of thousands of messages pays in full. With `MaildirClient::skip_sync` set, the client SHALL acknowledge both requests without flushing, the coroutines still yielding them: deliveries then run at the speed of the page cache and stay safe against a dying process, and a power cut may lose or truncate the entries delivered shortly before it. The option suits a caller that can deliver again what was lost, and no other.
+
 #### Scenario: A stored message
 
 - GIVEN a message stored into `new/`
 - WHEN the store runs
 - THEN the driver is asked, in order, to write `tmp/<id>`, flush it, rename it to `new/<id>` and flush `new/`
+
+#### Scenario: A bulk import with skip_sync
+
+- GIVEN a client whose `skip_sync` is set
+- WHEN a message is stored
+- THEN the same four requests are made and the two flushes are acknowledged without touching the disk
 
 ### Requirement: A move is a single rename
 

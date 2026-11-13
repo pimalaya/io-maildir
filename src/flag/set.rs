@@ -27,7 +27,7 @@ use crate::{
     coroutine::*,
     entry::INFORMATIONAL_SUFFIX_SEPARATOR,
     entry::locate::*,
-    flag::MaildirFlags,
+    flag::{MaildirFlags, has_foreign_info},
     maildir::{Maildir, MaildirSubdir},
     maildir_try,
     path::MaildirFsPath,
@@ -42,6 +42,10 @@ pub enum MaildirFlagsSetError {
     /// The inner locate step failed.
     #[error(transparent)]
     Locate(#[from] MaildirEntryLocateError),
+    /// The entry carries an info section other than `2,<flags>`, such
+    /// as an experimental `:1,` one, which a flag write would lose.
+    #[error("Maildir flags set failed: entry {0} carries a non-flag info section")]
+    ForeignInfo(MaildirFsPath),
 }
 
 /// Replaces the flags of a Maildir entry.
@@ -82,6 +86,11 @@ impl MaildirCoroutine for MaildirFlagsSet {
         match (&mut self.state, arg) {
             (State::Locate(c), arg) => {
                 let out = maildir_try!(c, arg);
+
+                if out.path.file_name().is_some_and(has_foreign_info) {
+                    let err = MaildirFlagsSetError::ForeignInfo(out.path);
+                    return MaildirCoroutineState::Complete(Err(err));
+                }
 
                 match out.subdir.clone() {
                     MaildirSubdir::Tmp => {

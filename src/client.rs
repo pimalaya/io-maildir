@@ -8,7 +8,7 @@ use alloc::{
 
 use std::{
     fs, io,
-    path::Path,
+    path::{Path, PathBuf},
     process, thread,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -25,7 +25,7 @@ use crate::{
         utils::{allocate_keyword_slot, keyword_slot},
     },
     entry::{
-        MaildirEntry, MaildirFullEntry,
+        INFORMATIONAL_SUFFIX_SEPARATOR, MaildirEntry, MaildirFullEntry,
         copy::*,
         get::*,
         headers::{inject_header, strip_headers},
@@ -141,109 +141,120 @@ impl MaildirClient {
             match coroutine.resume(arg.take()) {
                 MaildirCoroutineState::Complete(Ok(out)) => return Ok(out),
                 MaildirCoroutineState::Complete(Err(err)) => return Err(err.into()),
-                MaildirCoroutineState::Yielded(MaildirYield::WantsFileExists(paths)) => {
-                    let mut out = BTreeMap::new();
-                    for path in paths {
-                        let exists = fs::metadata(path.as_str())
-                            .map(|m| m.is_file())
-                            .unwrap_or(false);
-                        trace!("file_exists {path}: {exists}");
-                        out.insert(path, exists);
-                    }
-                    arg = Some(MaildirReply::FileExists(out));
-                }
-                MaildirCoroutineState::Yielded(MaildirYield::WantsDirExists(paths)) => {
-                    let mut out = BTreeMap::new();
-                    for path in paths {
-                        let exists = fs::metadata(path.as_str())
-                            .map(|m| m.is_dir())
-                            .unwrap_or(false);
-                        trace!("dir_exists {path}: {exists}");
-                        out.insert(path, exists);
-                    }
-                    arg = Some(MaildirReply::DirExists(out));
-                }
-                MaildirCoroutineState::Yielded(MaildirYield::WantsDirRead(paths)) => {
-                    let mut entries = BTreeMap::new();
-                    for path in paths {
-                        trace!("read_dir {path}");
-                        let mut names = BTreeSet::new();
-                        match fs::read_dir(path.as_str()) {
-                            Ok(iter) => {
-                                for entry in iter {
-                                    names.insert(MaildirFsPath::from(entry?.path()));
-                                }
-                            }
-                            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-                            Err(err) => return Err(err.into()),
-                        }
-                        entries.insert(path, names);
-                    }
-                    arg = Some(MaildirReply::DirRead(entries));
-                }
-                MaildirCoroutineState::Yielded(MaildirYield::WantsFileRead(paths)) => {
-                    let mut contents = BTreeMap::new();
-                    for path in paths {
-                        trace!("read_file {path}");
-                        let bytes = fs::read(path.as_str())?;
-                        contents.insert(path, bytes);
-                    }
-                    arg = Some(MaildirReply::FileRead(contents));
-                }
-                MaildirCoroutineState::Yielded(MaildirYield::WantsFileCreate(files)) => {
-                    for (path, contents) in files {
-                        trace!("write {path} ({} bytes)", contents.len());
-                        if let Some(parent) = Path::new(path.as_str()).parent() {
-                            fs::create_dir_all(parent)?;
-                        }
-                        fs::write(path.as_str(), &contents)?;
-                    }
-                    arg = Some(MaildirReply::FileCreate);
-                }
-                MaildirCoroutineState::Yielded(MaildirYield::WantsDirCreate(paths)) => {
-                    for path in paths {
-                        trace!("create_dir_all {path}");
-                        fs::create_dir_all(path.as_str())?;
-                    }
-                    arg = Some(MaildirReply::DirCreate);
-                }
-                MaildirCoroutineState::Yielded(MaildirYield::WantsDirRemove(paths)) => {
-                    for path in paths {
-                        trace!("remove_dir_all {path}");
-                        fs::remove_dir_all(path.as_str())?;
-                    }
-                    arg = Some(MaildirReply::DirRemove);
-                }
-                MaildirCoroutineState::Yielded(MaildirYield::WantsRename(pairs)) => {
-                    for (from, to) in pairs {
-                        trace!("rename {from} to {to}");
-                        fs::rename(from.as_str(), to.as_str())?;
-                    }
-                    arg = Some(MaildirReply::Rename);
-                }
-                MaildirCoroutineState::Yielded(MaildirYield::WantsCopy(pairs)) => {
-                    for (from, to) in pairs {
-                        trace!("copy {from} to {to}");
-                        fs::copy(from.as_str(), to.as_str())?;
-                    }
-                    arg = Some(MaildirReply::Copy);
-                }
-                MaildirCoroutineState::Yielded(MaildirYield::WantsTime) => {
-                    let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-                    arg = Some(MaildirReply::Time {
-                        secs: ts.as_secs(),
-                        nanos: ts.subsec_nanos(),
-                    });
-                }
-                MaildirCoroutineState::Yielded(MaildirYield::WantsPid) => {
-                    arg = Some(MaildirReply::Pid(process::id()));
-                }
-                MaildirCoroutineState::Yielded(MaildirYield::WantsHostname) => {
-                    let hostname = gethostname().into_string().unwrap_or_default();
-                    arg = Some(MaildirReply::Hostname(hostname));
-                }
+                MaildirCoroutineState::Yielded(wants) => arg = Some(self.reply(wants)?),
             }
         }
+    }
+
+    /// Performs the I/O one coroutine step asks for against [`std::fs`].
+    ///
+    /// A failing filesystem call names the path it failed on, the bare
+    /// [`io::Error`] naming none.
+    fn reply(&self, wants: MaildirYield) -> Result<MaildirReply, MaildirClientError> {
+        let reply = match wants {
+            MaildirYield::WantsFileExists(paths) => {
+                let mut out = BTreeMap::new();
+                for path in paths {
+                    let exists = fs::metadata(path.as_str())
+                        .map(|m| m.is_file())
+                        .unwrap_or(false);
+                    trace!("file_exists {path}: {exists}");
+                    out.insert(path, exists);
+                }
+                MaildirReply::FileExists(out)
+            }
+            MaildirYield::WantsDirExists(paths) => {
+                let mut out = BTreeMap::new();
+                for path in paths {
+                    let exists = fs::metadata(path.as_str())
+                        .map(|m| m.is_dir())
+                        .unwrap_or(false);
+                    trace!("dir_exists {path}: {exists}");
+                    out.insert(path, exists);
+                }
+                MaildirReply::DirExists(out)
+            }
+            MaildirYield::WantsDirRead(paths) => {
+                let mut entries = BTreeMap::new();
+                for path in paths {
+                    trace!("read_dir {path}");
+                    let mut names = BTreeSet::new();
+                    match fs::read_dir(path.as_str()) {
+                        Ok(iter) => {
+                            for entry in iter {
+                                let entry = entry.map_err(at(&path))?;
+                                names.insert(MaildirFsPath::from(entry.path()));
+                            }
+                        }
+                        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                        Err(err) => return Err(at(&path)(err)),
+                    }
+                    entries.insert(path, names);
+                }
+                MaildirReply::DirRead(entries)
+            }
+            MaildirYield::WantsFileRead(paths) => {
+                let mut contents = BTreeMap::new();
+                for path in paths {
+                    trace!("read_file {path}");
+                    let bytes = fs::read(path.as_str()).map_err(at(&path))?;
+                    contents.insert(path, bytes);
+                }
+                MaildirReply::FileRead(contents)
+            }
+            MaildirYield::WantsFileCreate(files) => {
+                for (path, contents) in files {
+                    trace!("write {path} ({} bytes)", contents.len());
+                    if let Some(parent) = Path::new(path.as_str()).parent() {
+                        fs::create_dir_all(parent).map_err(at(&path))?;
+                    }
+                    fs::write(path.as_str(), &contents).map_err(at(&path))?;
+                }
+                MaildirReply::FileCreate
+            }
+            MaildirYield::WantsDirCreate(paths) => {
+                for path in paths {
+                    trace!("create_dir_all {path}");
+                    fs::create_dir_all(path.as_str()).map_err(at(&path))?;
+                }
+                MaildirReply::DirCreate
+            }
+            MaildirYield::WantsDirRemove(paths) => {
+                for path in paths {
+                    trace!("remove_dir_all {path}");
+                    fs::remove_dir_all(path.as_str()).map_err(at(&path))?;
+                }
+                MaildirReply::DirRemove
+            }
+            MaildirYield::WantsRename(pairs) => {
+                for (from, to) in pairs {
+                    trace!("rename {from} to {to}");
+                    fs::rename(from.as_str(), to.as_str()).map_err(at(&from))?;
+                }
+                MaildirReply::Rename
+            }
+            MaildirYield::WantsCopy(pairs) => {
+                for (from, to) in pairs {
+                    trace!("copy {from} to {to}");
+                    fs::copy(from.as_str(), to.as_str()).map_err(at(&from))?;
+                }
+                MaildirReply::Copy
+            }
+            MaildirYield::WantsTime => {
+                let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+                MaildirReply::Time {
+                    secs: ts.as_secs(),
+                    nanos: ts.subsec_nanos(),
+                }
+            }
+            MaildirYield::WantsPid => MaildirReply::Pid(process::id()),
+            MaildirYield::WantsHostname => {
+                let hostname = gethostname().into_string().unwrap_or_default();
+                MaildirReply::Hostname(hostname)
+            }
+        };
+
+        Ok(reply)
     }
 
     /// Runs [`MaildirDovecotLoad`] for `maildir`.
@@ -278,8 +289,16 @@ impl MaildirClient {
         for sub in [CUR, NEW, TMP] {
             let path = root.join(sub);
 
-            if !Path::new(path.as_str()).is_dir() {
-                return Err(MaildirClientError::MissingSubdir(sub, root));
+            // NOTE: a folder that cannot be searched fails every stat
+            // below it, which reads as a missing subdirectory unless the
+            // error goes out as it is.
+            match fs::metadata(path.as_str()) {
+                Ok(meta) if meta.is_dir() => {}
+                Ok(_) => return Err(MaildirClientError::MissingSubdir(sub, root)),
+                Err(err) if is_missing(&err) => {
+                    return Err(MaildirClientError::MissingSubdir(sub, root));
+                }
+                Err(err) => return Err(at(&path)(err)),
             }
         }
 
@@ -302,8 +321,31 @@ impl MaildirClient {
 
     /// Runs [`MaildirList`] under the store root; honours the store's
     /// layout flag.
+    ///
+    /// A folder that cannot be read is skipped with a warning naming it,
+    /// so one unreadable folder does not hide the store. A symlink to a
+    /// folder the walk already reached is skipped too, which keeps a link
+    /// back to an ancestor from listing the same folders again and again.
     pub fn list_maildirs(&self) -> Result<BTreeSet<Maildir>, MaildirClientError> {
-        self.run(MaildirList::new(&self.store))
+        let mut coroutine = MaildirList::new(&self.store);
+        let mut reached = BTreeSet::new();
+        let mut arg = None;
+
+        loop {
+            match coroutine.resume(arg.take()) {
+                MaildirCoroutineState::Complete(Ok(out)) => return Ok(out),
+                MaildirCoroutineState::Complete(Err(err)) => return Err(err.into()),
+                MaildirCoroutineState::Yielded(MaildirYield::WantsDirRead(paths)) => {
+                    let mut entries = BTreeMap::new();
+                    for path in paths {
+                        let names = read_folder(&path, &mut reached);
+                        entries.insert(path, names);
+                    }
+                    arg = Some(MaildirReply::DirRead(entries));
+                }
+                MaildirCoroutineState::Yielded(wants) => arg = Some(self.reply(wants)?),
+            }
+        }
     }
 
     /// Runs [`MaildirRename`] from `from` to `to`, both logical mailbox
@@ -405,7 +447,7 @@ impl MaildirClient {
     ) -> Result<(), MaildirClientError> {
         let (path, _subdir, _flags) = self.locate(maildir, id)?;
         trace!("remove entry file at {path}");
-        fs::remove_file(path.as_str())?;
+        fs::remove_file(path.as_str()).map_err(at(&path))?;
         Ok(())
     }
 
@@ -446,6 +488,30 @@ impl MaildirClient {
         entries
             .iter()
             .map(|entry| self.read_entry_with(entry, &table))
+            .collect()
+    }
+
+    /// Like [`Self::read_entries`], skipping with a warning an entry
+    /// that cannot be read rather than failing the whole batch.
+    ///
+    /// Fits a listing, where one unreadable file should not hide the
+    /// rest of the Maildir.
+    pub fn read_readable_entries(
+        &self,
+        maildir: &Maildir,
+        entries: &[MaildirEntry],
+    ) -> BTreeSet<MaildirFullEntry> {
+        let table = self.keyword_table(maildir);
+
+        entries
+            .iter()
+            .filter_map(|entry| match self.read_entry_with(entry, &table) {
+                Ok(entry) => Some(entry),
+                Err(err) => {
+                    warn!("skip entry: {err}");
+                    None
+                }
+            })
             .collect()
     }
 
@@ -577,6 +643,10 @@ impl MaildirClient {
 
     /// Runs [`MaildirEntryCopy`] from `source` to `target`, returning
     /// the id the copy got.
+    ///
+    /// With [`Self::dovecot_keywords`] set, the copy's keyword letters
+    /// are renamed through the target's own `dovecot-keywords` file, see
+    /// [`Self::remap_keywords`].
     pub fn copy(
         &self,
         id: impl ToString,
@@ -584,18 +654,82 @@ impl MaildirClient {
         target: Maildir,
         target_subdir: Option<MaildirSubdir>,
     ) -> Result<String, MaildirClientError> {
-        self.run(MaildirEntryCopy::new(id, source, target, target_subdir))
+        let id = id.to_string();
+        let keywords = self.entry_keywords(&source, &target, &id)?;
+        let coroutine = MaildirEntryCopy::new(id, source, target.clone(), target_subdir);
+        let id = self.run(coroutine)?;
+        self.remap_keywords(&target, &id, keywords)?;
+        Ok(id)
     }
 
-    /// Runs [`MaildirEntryMove`] from `source` to `target`.
+    /// Runs [`MaildirEntryMove`] from `source` to `target`, returning
+    /// the id the moved entry got.
+    ///
+    /// Keyword letters are renamed as [`Self::copy`] renames them.
     pub fn r#move(
         &self,
         id: impl ToString,
         source: Maildir,
         target: Maildir,
         target_subdir: Option<MaildirSubdir>,
+    ) -> Result<String, MaildirClientError> {
+        let id = id.to_string();
+        let keywords = self.entry_keywords(&source, &target, &id)?;
+        let coroutine = MaildirEntryMove::new(id, source, target.clone(), target_subdir);
+        let id = self.run(coroutine)?;
+        self.remap_keywords(&target, &id, keywords)?;
+        Ok(id)
+    }
+
+    /// The keywords the dovecot letters of entry `id` in `source` stand
+    /// for, `None` when nothing needs renaming: [`Self::dovecot_keywords`]
+    /// unset, `source` and `target` one Maildir, or no letter on the
+    /// entry.
+    fn entry_keywords(
+        &self,
+        source: &Maildir,
+        target: &Maildir,
+        id: &str,
+    ) -> Result<Option<Vec<String>>, MaildirClientError> {
+        if !self.dovecot_keywords || source.path() == target.path() {
+            return Ok(None);
+        }
+
+        let (path, _, _) = self.locate(source.clone(), id)?;
+        if !has_keyword_letters(&path) {
+            return Ok(None);
+        }
+
+        let table = self.keyword_table(source);
+        let mut flags = MaildirFlags::with_dovecot(&path, &table);
+        Ok(Some(flags.drain_keywords()))
+    }
+
+    /// Rewrites the keyword letters of entry `id` in `target` so they
+    /// name `keywords` in the target's `dovecot-keywords` file,
+    /// allocating slots there as a store does.
+    ///
+    /// A letter is an index into its own Maildir's table, so a letter
+    /// carried verbatim would name another keyword, or none, in the
+    /// target. A letter the source table did not name is dropped.
+    fn remap_keywords(
+        &self,
+        target: &Maildir,
+        id: &str,
+        keywords: Option<Vec<String>>,
     ) -> Result<(), MaildirClientError> {
-        self.run(MaildirEntryMove::new(id, source, target, target_subdir))
+        let Some(keywords) = keywords else {
+            return Ok(());
+        };
+
+        let (path, _, _) = self.locate(target.clone(), id)?;
+        if !has_keyword_letters(&path) {
+            return Ok(());
+        }
+
+        let mut flags: MaildirFlags = MaildirFlags::from(&path).iter().cloned().collect();
+        flags.extend_keywords(keywords);
+        self.set_flags(target.clone(), id, flags)
     }
 
     /// Reads `entry`'s file, applying [`Self::strip_headers`] when set,
@@ -608,7 +742,7 @@ impl MaildirClient {
         let path = entry.path();
         trace!("read entry at {path}");
 
-        let contents = fs::read(path.as_str())?;
+        let contents = fs::read(path.as_str()).map_err(at(path))?;
         let contents = if self.strip_headers.is_empty() {
             contents
         } else {
@@ -715,4 +849,82 @@ impl MaildirClient {
 
         Ok(())
     }
+}
+
+/// Wraps an [`io::Error`] so its message names the path it failed on,
+/// its kind kept.
+fn at(path: &MaildirFsPath) -> impl FnOnce(io::Error) -> MaildirClientError + '_ {
+    move |err| io::Error::new(err.kind(), format!("{path}: {err}")).into()
+}
+
+/// Whether `err` says the path is not there, as opposed to unreachable.
+fn is_missing(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+    )
+}
+
+/// The children of the folder `path` for the listing walk, `reached`
+/// holding the canonical folders walked so far.
+///
+/// An unreadable folder or child is skipped with a warning, and so is a
+/// symlink to a folder already reached.
+fn read_folder(path: &MaildirFsPath, reached: &mut BTreeSet<PathBuf>) -> BTreeSet<MaildirFsPath> {
+    trace!("read_dir {path}");
+    let mut names = BTreeSet::new();
+
+    if let Ok(canonical) = fs::canonicalize(path.as_str()) {
+        reached.insert(canonical);
+    }
+
+    let iter = match fs::read_dir(path.as_str()) {
+        Ok(iter) => iter,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return names,
+        Err(err) => {
+            warn!("skip folder {path}: {err}");
+            return names;
+        }
+    };
+
+    for entry in iter {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                warn!("skip an entry of folder {path}: {err}");
+                continue;
+            }
+        };
+        let child = entry.path();
+
+        let is_link = entry.file_type().is_ok_and(|t| t.is_symlink());
+        if is_link && fs::metadata(&child).is_ok_and(|m| m.is_dir()) {
+            match fs::canonicalize(&child) {
+                Ok(target) if reached.insert(target.clone()) => {}
+                Ok(target) => {
+                    let child = child.display();
+                    let target = target.display();
+                    warn!("skip folder {child}: it links to {target}, already listed");
+                    continue;
+                }
+                Err(err) => {
+                    warn!("skip folder {}: {err}", child.display());
+                    continue;
+                }
+            }
+        }
+
+        names.insert(MaildirFsPath::from(child));
+    }
+
+    names
+}
+
+/// Returns `true` when the entry at `path` carries a dovecot keyword
+/// letter, a lowercase one in its `2,` info section.
+fn has_keyword_letters(path: &MaildirFsPath) -> bool {
+    path.file_name()
+        .and_then(|name| name.rsplit_once(INFORMATIONAL_SUFFIX_SEPARATOR))
+        .and_then(|(_, info)| info.strip_prefix("2,"))
+        .is_some_and(|letters| letters.chars().any(|c| c.is_ascii_lowercase()))
 }

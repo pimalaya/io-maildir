@@ -183,6 +183,17 @@ impl MaildirPath {
     pub fn components(&self) -> impl Iterator<Item = &str> {
         self.0.split('/').filter(|c| !c.is_empty())
     }
+
+    /// Returns `true` when the path names a folder below the store root:
+    /// one segment at least, none of them `.` or `..`.
+    ///
+    /// Any other path resolves to the root itself or outside it (in
+    /// Maildir++, `.` resolves to `<root>/..`), so the destructive
+    /// coroutines refuse it.
+    pub fn names_folder(&self) -> bool {
+        let mut components = self.components().peekable();
+        components.peek().is_some() && components.all(|c| c != "." && c != "..")
+    }
 }
 
 impl fmt::Display for MaildirPath {
@@ -227,6 +238,16 @@ mod tests {
         assert!(MaildirPath::default().is_empty());
         assert!(MaildirPath::from("").is_empty());
         assert!(!MaildirPath::from("Foo").is_empty());
+    }
+
+    #[test]
+    fn only_a_path_below_the_root_names_a_folder() {
+        assert!(MaildirPath::from("Foo").names_folder());
+        assert!(MaildirPath::from("Foo/Bar/").names_folder());
+
+        for path in ["", "/", ".", "./", "..", "Foo/..", "./Foo", "a/../.."] {
+            assert!(!MaildirPath::from(path).names_folder(), "{path}");
+        }
     }
 
     #[test]

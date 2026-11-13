@@ -11,7 +11,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `MaildirClient::copy` and the `MaildirEntryCopy` coroutine return the id minted for the copy instead of `()`.
 
+- `MaildirClient::r#move` and the `MaildirEntryMove` coroutine return the id minted for the moved entry instead of `()`.
+
+- `MaildirClient::list_maildirs` skips a folder it cannot read, and a symlink to a folder the walk already reached, with a warning instead of failing or looping.
+
+### Added
+
+- `MaildirRenameError::TargetExists`, refusing a Maildir++ rename whose child would land on an existing folder.
+
+- `MaildirPath::names_folder`, true for a path naming a folder below the store root.
+
+- `MaildirClient::read_readable_entries`, reading a batch of entries while skipping, with a warning, the ones that cannot be read.
+
 ### Fixed
+
+- Fixed a Maildir++ rename or delete leaving the `.<name>.*` children behind under a parent that no longer exists: they are renamed or removed with it, as the fs layout moves the subtree.
+
+- Fixed `load_maildir` reporting a folder it may not search as missing its `cur/` subdirectory: the permission error goes out naming the path.
+
+- Fixed `MaildirDelete` on `.` emptying the whole store: deleting or renaming a name that resolves to the store root or outside it is refused (`NotAFolder`). In Maildir++ `.` resolved to the root's parent.
+
+- Fixed a copy or move with `dovecot_keywords` set carrying the keyword letters verbatim, so a keyword took the meaning of whatever the target's `dovecot-keywords` file numbered the same. The letters are now renamed through the target's file.
+
+- Fixed an experimental `:1,` info section read as flag letters and rewritten as `:2,` by a flag write: only `2,` carries flags, and a flag write on any other info section is refused (`ForeignInfo`).
+
+- Fixed filesystem errors of the client not naming the path they failed on.
 
 - Fixed listing a store failing with `Not a directory` on any plain file beside its folders, such as `dovecot-uidlist` or the `dovecot-keywords` file io-maildir writes itself.
 

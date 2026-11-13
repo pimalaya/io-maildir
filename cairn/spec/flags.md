@@ -61,3 +61,23 @@ A write whose resulting flag set is unchanged SHALL leave the entry in `new/`: m
 ### Requirement: A flag write never touches an entry in tmp/
 
 An entry in `tmp/` is another process's delivery in flight. A flag write naming it SHALL complete without renaming anything, rather than claiming a half-written file.
+
+### Requirement: Only a version 2 info section carries flags
+
+Only an info section starting `2,` SHALL be read as flags. Any other info section, such as an experimental `:1,` one, SHALL carry no flag, and a flag write on such an entry SHALL be refused (`ForeignInfo`), the entry left as it is, since rebuilding its name as `<id>:2,<flags>` would lose it.
+
+#### Scenario: An experimental info section
+
+- GIVEN an entry named `1700000008.M8P8.host:1,experimental` and a `dovecot-keywords` file naming `a`
+- WHEN its flags are read, then a flag is added to it
+- THEN it carries no flag, the write is refused, and the file keeps its name
+
+### Requirement: A copy or move keeps the keywords, not the letters
+
+With `dovecot_keywords` set, a copy or a move across Maildirs SHALL rename the keyword letters of the delivered entry through the target's own `dovecot-keywords` file, allocating slots there as a store does, so every keyword keeps its meaning. A letter the source file does not name SHALL be dropped. Without `dovecot_keywords`, the letters SHALL be carried verbatim.
+
+#### Scenario: Two Maildirs numbering their keywords apart
+
+- GIVEN a source naming `a` `$Important` and `c` `Project X`, a target naming `a` `$Junk`, and an entry `:2,FSac` in the source
+- WHEN it is copied to the target
+- THEN the copy reads `\Flagged \Seen $Important Project X` and the target file still names `a` `$Junk`

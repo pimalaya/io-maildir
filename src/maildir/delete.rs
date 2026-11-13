@@ -17,7 +17,7 @@
 
 use core::{fmt, mem};
 
-use alloc::collections::BTreeSet;
+use alloc::{collections::BTreeSet, format};
 
 use log::debug;
 use thiserror::Error;
@@ -34,9 +34,14 @@ pub enum MaildirDeleteError {
     /// A reply arrived that does not match the awaited step.
     #[error("Maildir delete failed: unexpected arg {0:?}")]
     UnexpectedArg(Option<MaildirReply>),
+    /// The name resolves to the store root or outside it.
+    #[error("Maildir delete failed: `{0}` names no folder below the store root")]
+    NotAFolder(MaildirPath),
 }
 
-/// Recursively removes a Maildir directory.
+/// Recursively removes a Maildir directory. On Maildir++ every
+/// `.<name>.*` sibling holding its children goes too, as the fs removal
+/// takes them along.
 #[derive(Debug)]
 pub struct MaildirDelete {
     state: State,
@@ -45,8 +50,26 @@ pub struct MaildirDelete {
 impl MaildirDelete {
     /// Builds a coroutine recursively removing the Maildir resolved
     /// from `name` under `store`.
+    ///
+    /// A name resolving to the root or outside it is refused on the
+    /// first resume, nothing removed.
     pub fn new(store: &MaildirStore, name: MaildirPath) -> Self {
-        let paths = BTreeSet::from_iter([store.resolve(&name)]);
+        if !name.names_folder() {
+            return Self {
+                state: State::Refused(name),
+            };
+        }
+
+        let path = store.resolve(&name);
+
+        if store.maildirpp {
+            let root = store.root.clone();
+            return Self {
+                state: State::Siblings { root, path },
+            };
+        }
+
+        let paths = BTreeSet::from_iter([path]);
         Self {
             state: State::Start { paths },
         }
@@ -62,6 +85,23 @@ impl MaildirCoroutine for MaildirDelete {
         arg: Option<MaildirReply>,
     ) -> MaildirCoroutineState<Self::Yield, Self::Return> {
         match (&mut self.state, arg) {
+            (State::Refused(name), None) => {
+                let err = MaildirDeleteError::NotAFolder(mem::take(name));
+                MaildirCoroutineState::Complete(Err(err))
+            }
+            (State::Siblings { root, .. }, None) => {
+                let paths = BTreeSet::from([mem::take(root)]);
+                MaildirCoroutineState::Yielded(MaildirYield::WantsDirRead(paths))
+            }
+            (State::Siblings { path, .. }, Some(MaildirReply::DirRead(entries))) => {
+                let path = mem::take(path);
+                let prefix = format!("{path}.");
+                let mut paths = BTreeSet::from([path]);
+                let children = entries.into_values().flatten();
+                paths.extend(children.filter(|name| name.as_str().starts_with(&prefix)));
+                self.state = State::Remove;
+                MaildirCoroutineState::Yielded(MaildirYield::WantsDirRemove(paths))
+            }
             (State::Start { paths }, None) => {
                 let paths = mem::take(paths);
                 self.state = State::Remove;
@@ -81,13 +121,22 @@ impl MaildirCoroutine for MaildirDelete {
 
 #[derive(Debug)]
 enum State {
-    Start { paths: BTreeSet<MaildirFsPath> },
+    Refused(MaildirPath),
+    Siblings {
+        root: MaildirFsPath,
+        path: MaildirFsPath,
+    },
+    Start {
+        paths: BTreeSet<MaildirFsPath>,
+    },
     Remove,
 }
 
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Refused(_) => f.write_str("refuse"),
+            Self::Siblings { .. } => f.write_str("read siblings"),
             Self::Start { .. } => f.write_str("start"),
             Self::Remove => f.write_str("remove maildir"),
         }
@@ -96,6 +145,8 @@ impl fmt::Display for State {
 
 #[cfg(test)]
 mod tests {
+    use alloc::{collections::BTreeMap, vec::Vec};
+
     use crate::maildir::delete::*;
 
     fn fs_store() -> MaildirStore {
@@ -127,8 +178,55 @@ mod tests {
     fn maildirpp_removes_dotted_flat_path() {
         let mut cor = MaildirDelete::new(&maildirpp_store(), MaildirPath::from("Foo/Bar"));
 
-        let paths = expect_wants_dir_remove(&mut cor);
-        assert!(paths.contains(&MaildirFsPath::from("root/.Foo.Bar")));
+        let names = [
+            "root/.Foo.Bar",
+            "root/.Foo.Bar.Kid",
+            "root/.Foo.Barn",
+            "root/.Foo",
+        ];
+        let paths = expect_remove_after_read(&mut cor, &names);
+        let paths: Vec<&str> = paths.iter().map(|path| path.as_str()).collect();
+        assert_eq!(paths, ["root/.Foo.Bar", "root/.Foo.Bar.Kid"]);
+    }
+
+    fn expect_remove_after_read(
+        cor: &mut MaildirDelete,
+        names: &[&str],
+    ) -> BTreeSet<MaildirFsPath> {
+        match cor.resume(None) {
+            MaildirCoroutineState::Yielded(MaildirYield::WantsDirRead(paths)) => {
+                assert_eq!(paths, BTreeSet::from([MaildirFsPath::from("root")]));
+            }
+            state => panic!("expected WantsDirRead, got {state:?}"),
+        }
+
+        let names = names
+            .iter()
+            .map(|name| MaildirFsPath::from(*name))
+            .collect();
+        let entries = BTreeMap::from([(MaildirFsPath::from("root"), names)]);
+        expect_wants_dir_remove_after(cor, MaildirReply::DirRead(entries))
+    }
+
+    fn expect_wants_dir_remove_after(
+        cor: &mut MaildirDelete,
+        reply: MaildirReply,
+    ) -> BTreeSet<MaildirFsPath> {
+        match cor.resume(Some(reply)) {
+            MaildirCoroutineState::Yielded(MaildirYield::WantsDirRemove(paths)) => paths,
+            state => panic!("expected WantsDirRemove, got {state:?}"),
+        }
+    }
+
+    #[test]
+    fn the_root_and_paths_leaving_it_are_refused() {
+        for name in ["", ".", "./", "..", "Foo/.."] {
+            for store in [fs_store(), maildirpp_store()] {
+                let mut cor = MaildirDelete::new(&store, MaildirPath::from(name));
+                let err = expect_complete_err(&mut cor, None);
+                assert!(matches!(err, MaildirDeleteError::NotAFolder(_)), "{name}");
+            }
+        }
     }
 
     #[test]

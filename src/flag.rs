@@ -43,11 +43,23 @@ pub struct MaildirFlags {
 ///
 /// Splits at the marker, not at the last comma, so that dovecot's
 /// `,S=<size>,W=<vsize>` extensions in the unique part are not read as
-/// flag letters.
+/// flag letters. Only version 2 carries flags: an experimental `:1,`
+/// info section holds none.
 fn info_letters(file_name: &str) -> Option<&str> {
     let (_, info) = file_name.rsplit_once(INFORMATIONAL_SUFFIX_SEPARATOR)?;
-    let (_, letters) = info.split_once(',')?;
-    Some(letters)
+    info.strip_prefix("2,")
+}
+
+/// Returns `true` when an entry filename carries an info section other
+/// than `2,<letters>`, such as an experimental `:1,` one.
+///
+/// A flag write would rebuild the name as `<id>:2,<letters>`, losing
+/// it, so the flag coroutines refuse such an entry.
+pub(crate) fn has_foreign_info(file_name: &str) -> bool {
+    match file_name.rsplit_once(INFORMATIONAL_SUFFIX_SEPARATOR) {
+        Some((_, info)) => !info.starts_with("2,"),
+        None => false,
+    }
 }
 
 impl From<&MaildirFsPath> for MaildirFlags {
@@ -373,6 +385,18 @@ mod tests {
 
     fn keywords(flags: &MaildirFlags) -> Vec<&str> {
         flags.iter().filter_map(MaildirFlag::as_keyword).collect()
+    }
+
+    #[test]
+    fn an_experimental_info_section_carries_no_flag() {
+        let table = BTreeMap::from_iter([('a', "$Important".to_string())]);
+        let path = path("/m/cur/1700000008.M8P8.host:1,experimental");
+
+        assert!(MaildirFlags::from(&path).is_empty());
+        assert!(MaildirFlags::with_dovecot(&path, &table).is_empty());
+        assert!(has_foreign_info("1700000008.M8P8.host:1,experimental"));
+        assert!(!has_foreign_info("1700000008.M8P8.host:2,S"));
+        assert!(!has_foreign_info("1700000008.M8P8.host"));
     }
 
     #[test]

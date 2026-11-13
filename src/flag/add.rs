@@ -27,7 +27,7 @@ use crate::{
     coroutine::*,
     entry::INFORMATIONAL_SUFFIX_SEPARATOR,
     entry::locate::*,
-    flag::MaildirFlags,
+    flag::{MaildirFlags, has_foreign_info},
     maildir::{Maildir, MaildirSubdir},
     maildir_try,
     path::MaildirFsPath,
@@ -42,6 +42,10 @@ pub enum MaildirFlagsAddError {
     /// The inner locate step failed.
     #[error(transparent)]
     Locate(#[from] MaildirEntryLocateError),
+    /// The entry carries an info section other than `2,<flags>`, such
+    /// as an experimental `:1,` one, which a flag write would lose.
+    #[error("Maildir flags add failed: entry {0} carries a non-flag info section")]
+    ForeignInfo(MaildirFsPath),
 }
 
 /// Adds flags to a Maildir entry.
@@ -82,6 +86,11 @@ impl MaildirCoroutine for MaildirFlagsAdd {
         match (&mut self.state, arg) {
             (State::Locate(c), arg) => {
                 let out = maildir_try!(c, arg);
+
+                if out.path.file_name().is_some_and(has_foreign_info) {
+                    let err = MaildirFlagsAddError::ForeignInfo(out.path);
+                    return MaildirCoroutineState::Complete(Err(err));
+                }
 
                 match out.subdir.clone() {
                     MaildirSubdir::Tmp => {
@@ -319,6 +328,34 @@ mod tests {
         probes.insert(MaildirFsPath::from("root/new/abc"), false);
         probes.insert(MaildirFsPath::from("root/tmp/abc"), true);
         expect_complete_ok(&mut cor, Some(MaildirReply::FileExists(probes)));
+    }
+
+    #[test]
+    fn an_experimental_info_section_is_refused_not_rewritten() {
+        let mut cor = MaildirFlagsAdd::new(maildir(), "abc", seen());
+
+        expect_wants_file_exists(&mut cor);
+
+        let mut probes = BTreeMap::new();
+        probes.insert(MaildirFsPath::from("root/new/abc"), false);
+        probes.insert(MaildirFsPath::from("root/tmp/abc"), false);
+        match cor.resume(Some(MaildirReply::FileExists(probes))) {
+            MaildirCoroutineState::Yielded(MaildirYield::WantsDirRead(_)) => {}
+            state => panic!("expected WantsDirRead, got {state:?}"),
+        }
+
+        let mut entries = BTreeMap::new();
+        let set = BTreeSet::from_iter([MaildirFsPath::from("root/cur/abc:1,experimental")]);
+        entries.insert(MaildirFsPath::from("root/cur"), set);
+        let path = MaildirFsPath::from("root/cur/abc:1,experimental");
+        match cor.resume(Some(MaildirReply::DirRead(entries))) {
+            MaildirCoroutineState::Yielded(MaildirYield::WantsFileExists(_)) => {}
+            state => panic!("expected WantsFileExists, got {state:?}"),
+        }
+
+        let probes = BTreeMap::from_iter([(path, true)]);
+        let err = expect_complete_err(&mut cor, Some(MaildirReply::FileExists(probes)));
+        assert!(matches!(err, MaildirFlagsAddError::ForeignInfo(_)), "{err}");
     }
 
     #[test]

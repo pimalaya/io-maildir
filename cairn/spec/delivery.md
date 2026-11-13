@@ -47,3 +47,27 @@ Moving an entry into another Maildir SHALL be one rename from the source path to
 ### Requirement: The source of a copy is untouched
 
 Copying SHALL leave the source entry byte for byte as it was, under its own name in its own Maildir, whatever happens to the destination.
+
+### Requirement: A copy and a move return the id they minted
+
+`MaildirEntryCopy`, `MaildirEntryMove`, `MaildirClient::copy` and `MaildirClient::r#move` SHALL complete with the id minted for the delivered entry, so a caller reports the entry by the name it has afterwards.
+
+### Requirement: The store root is never deleted nor renamed
+
+`MaildirDelete` and `MaildirRename` SHALL refuse a name that resolves to the store root or outside it (empty, `.`, `..` or holding either as a segment), before any filesystem call, with `NotAFolder`. In Maildir++ `.` would resolve to the parent of the root.
+
+#### Scenario: Deleting `.`
+
+- GIVEN a store whose root is a Maildir holding `Work` and a Maildir++ `.Sent`
+- WHEN `.` is deleted
+- THEN the delete is refused and nothing is removed
+
+### Requirement: A Maildir++ folder is renamed and deleted with its children
+
+On Maildir++, `MaildirRename` SHALL rename every root entry named `.<from>.*` along with `.<from>`, as the fs layout moves the subtree, and SHALL refuse with `TargetExists`, before any rename, when one of the new names already exists. `MaildirDelete` SHALL remove every `.<name>.*` entry along with `.<name>`.
+
+#### Scenario: Renaming a Maildir++ folder holding a child
+
+- GIVEN a Maildir++ store holding `.Lists.rust`, `.Lists.rust.Kaffee` and `.Lists.rustacean`
+- WHEN `Lists/rust` is renamed `Lists/go`
+- THEN the store holds `.Lists.go`, `.Lists.go.Kaffee` and `.Lists.rustacean`

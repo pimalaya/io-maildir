@@ -26,7 +26,7 @@
 
 use core::{fmt, mem};
 
-use alloc::string::ToString;
+use alloc::string::{String, ToString};
 
 use log::debug;
 use thiserror::Error;
@@ -79,7 +79,7 @@ impl MaildirEntryMove {
 
 impl MaildirCoroutine for MaildirEntryMove {
     type Yield = MaildirYield;
-    type Return = Result<(), MaildirEntryMoveError>;
+    type Return = Result<String, MaildirEntryMoveError>;
 
     fn resume(
         &mut self,
@@ -147,12 +147,12 @@ impl MaildirCoroutine for MaildirEntryMove {
                 let id = mint_id(*secs, *nanos, *pid, &hostname);
                 let target = build_target_path(&self.target, subdir, &id, flags);
                 let pairs = vec![(mem::take(source), target)];
-                self.state = State::Rename;
+                self.state = State::Rename { id };
                 MaildirCoroutineState::Yielded(MaildirYield::WantsRename(pairs))
             }
-            (State::Rename, Some(MaildirReply::Rename)) => {
+            (State::Rename { id }, Some(MaildirReply::Rename)) => {
                 debug!("moved entry");
-                MaildirCoroutineState::Complete(Ok(()))
+                MaildirCoroutineState::Complete(Ok(mem::take(id)))
             }
             (_, arg) => {
                 let err = MaildirEntryMoveError::UnexpectedArg(arg);
@@ -185,7 +185,9 @@ enum State {
         nanos: u32,
         pid: u32,
     },
-    Rename,
+    Rename {
+        id: String,
+    },
 }
 
 impl fmt::Display for State {
@@ -195,7 +197,7 @@ impl fmt::Display for State {
             Self::ReadTime { .. } => f.write_str("read time"),
             Self::ReadPid { .. } => f.write_str("read pid"),
             Self::ReadHostname { .. } => f.write_str("read hostname"),
-            Self::Rename => f.write_str("rename into place"),
+            Self::Rename { .. } => f.write_str("rename into place"),
         }
     }
 }
@@ -303,7 +305,7 @@ mod tests {
             state => panic!("expected WantsRename, got {state:?}"),
         }
         match cor.resume(Some(MaildirReply::Rename)) {
-            MaildirCoroutineState::Complete(Ok(())) => {}
+            MaildirCoroutineState::Complete(Ok(id)) => assert!(id.starts_with("1."), "got {id}"),
             state => panic!("expected Complete(Ok), got {state:?}"),
         }
     }

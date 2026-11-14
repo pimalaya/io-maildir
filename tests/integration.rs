@@ -48,7 +48,10 @@ fn end_to_end() {
 
     // ── MAILDIR LIST (baseline) ─────────────────────────────────────
 
-    let maildirs = client.list_maildirs().expect("list maildirs (baseline)");
+    let maildirs = client
+        .list_maildirs()
+        .expect("list maildirs (baseline)")
+        .maildirs;
     assert!(maildirs.is_empty(), "root should be empty initially");
 
     // ── MAILDIR CREATE ──────────────────────────────────────────────
@@ -67,7 +70,7 @@ fn end_to_end() {
 
     // ── MAILDIR LIST (after create) ─────────────────────────────────
 
-    let maildirs = client.list_maildirs().expect("list maildirs");
+    let maildirs = client.list_maildirs().expect("list maildirs").maildirs;
     assert_eq!(maildirs.len(), 2);
     assert!(maildirs.contains(&inbox));
     assert!(maildirs.contains(&drafts));
@@ -392,7 +395,7 @@ fn end_to_end() {
         "archive dir should be removed",
     );
 
-    let maildirs = client.list_maildirs().expect("list after delete");
+    let maildirs = client.list_maildirs().expect("list after delete").maildirs;
     assert_eq!(maildirs.len(), 1, "only inbox should remain");
     assert!(maildirs.contains(&inbox));
 }

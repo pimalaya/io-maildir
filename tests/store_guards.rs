@@ -23,6 +23,7 @@ fn names(client: &MaildirClient) -> Vec<String> {
     client
         .list_maildirs()
         .unwrap()
+        .maildirs
         .iter()
         .map(|maildir| {
             let path = maildir.path().as_str();
@@ -130,48 +131,91 @@ fn a_symlink_back_to_an_ancestor_lists_nothing_twice() {
     std::os::unix::fs::symlink(&root, root.join("Loop")).unwrap();
     std::os::unix::fs::symlink(root.join("Work"), root.join("Work/Again")).unwrap();
 
-    assert_eq!(names(&client(&root)), ["Work"]);
+    let client = client(&root);
+    assert_eq!(names(&client), ["Work"]);
+    assert!(client.list_maildirs().unwrap().unreadable.is_empty());
 }
 
 #[cfg(unix)]
 #[test]
-fn an_unreadable_folder_is_skipped_and_an_unreadable_entry_named() {
+fn an_unreadable_entry_among_three_is_returned_with_its_error() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempdir().unwrap();
     let root = dir.path();
     maildir_at(&root.join("A"));
-    maildir_at(&root.join("Locked/Inner"));
-    fs::write(root.join("A/cur/1.host:2,S"), b"Subject: a\r\n\r\n").unwrap();
-    fs::write(root.join("A/cur/2.host:2,S"), b"Subject: b\r\n\r\n").unwrap();
-    let locked = root.join("Locked");
-    let entry = root.join("A/cur/2.host:2,S");
+    for name in ["1.host:2,S", "2.host:2,S", "3.host:2,S"] {
+        fs::write(root.join("A/cur").join(name), b"Subject: a\r\n\r\n").unwrap();
+    }
+    let locked = root.join("A/cur/2.host:2,S");
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
-    fs::set_permissions(&entry, fs::Permissions::from_mode(0o000)).unwrap();
 
-    // NOTE: root reads through any mode, so the checks only hold for
-    // an ordinary user.
-    if fs::read(&entry).is_ok() {
+    // NOTE: root (euid 0) reads through any mode, so the checks only
+    // hold for an ordinary user.
+    if fs::read(&locked).is_ok() {
         return;
     }
 
     let client = client(root);
-    let listed = names(&client);
     let a = client.load_maildir("A").unwrap();
     let entries: Vec<_> = client
         .list_entries(a.clone())
         .unwrap()
         .into_iter()
         .collect();
-    let readable = client.read_readable_entries(&a, &entries);
+    let read = client.read_readable_entries(&a, &entries);
     let err = client.read_entries(&a, &entries).unwrap_err().to_string();
 
-    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
-    fs::set_permissions(&entry, fs::Permissions::from_mode(0o644)).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).unwrap();
 
-    assert_eq!(listed, ["A"]);
-    assert_eq!(readable.len(), 1);
+    let ids: Vec<_> = read.entries.iter().filter_map(|e| e.id()).collect();
+    assert_eq!(ids, ["1.host", "3.host"]);
+    assert_eq!(read.unreadable.len(), 1);
+
+    let unreadable = &read.unreadable[0];
+    let error = unreadable.error.to_string();
+    assert_eq!(unreadable.entry.id(), Some("2.host"));
+    assert!(error.contains("2.host:2,S"), "{error}");
+    assert!(error.contains("ermission denied"), "{error}");
     assert!(err.contains("2.host:2,S"), "{err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_folder_whose_mode_forbids_reading_is_returned_with_its_error() {
+    use std::{io::ErrorKind, os::unix::fs::PermissionsExt};
+
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    maildir_at(&root.join("A"));
+    maildir_at(&root.join("Locked/Inner"));
+    let locked = root.join("Locked");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+    // NOTE: root (euid 0) reads through any mode, so the checks only
+    // hold for an ordinary user.
+    if fs::read_dir(&locked).is_ok() {
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+
+    let listing = client(root).list_maildirs().unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let maildirs: Vec<_> = listing
+        .maildirs
+        .iter()
+        .map(|maildir| maildir.path().clone())
+        .collect();
+    assert_eq!(maildirs.len(), 1);
+    assert!(maildirs[0].as_str().ends_with("/A"), "{maildirs:?}");
+    assert_eq!(listing.unreadable.len(), 1);
+
+    let unreadable = &listing.unreadable[0];
+    let error = unreadable.error.to_string();
+    assert!(unreadable.path.as_str().ends_with("/Locked"));
+    assert_eq!(unreadable.error.kind(), ErrorKind::PermissionDenied);
+    assert!(error.contains("Locked"), "{error}");
 }
 
 #[test]

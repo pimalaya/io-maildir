@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING**: Changed `MaildirClient::read_readable_entries` to return `client::MaildirEntriesRead`.
+
+  Its `unreadable` holds each entry that could not be read with its error, which names the entry's path, instead of a warning.
+
+- **BREAKING**: Changed `MaildirClient::list_maildirs` to return `client::MaildirListing`.
+
+  Its `unreadable` holds each folder, folder entry or link the walk could not read with its error, which names the path, instead of a warning.
+
+### Added
+
+- Added `client::MaildirEntriesRead` and `client::MaildirUnreadableEntry`.
+
+- Added `client::MaildirListing` and `client::MaildirUnreadableFolder`.
+
 ## [0.4.0] - 2026-11-13
 
 ### Changed

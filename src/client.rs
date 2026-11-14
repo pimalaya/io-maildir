@@ -16,7 +16,7 @@ use std::{
 };
 
 use gethostname::gethostname;
-use log::{trace, warn};
+use log::{debug, trace, warn};
 use thiserror::Error;
 
 use crate::{
@@ -114,6 +114,46 @@ pub enum MaildirClientError {
     /// A filesystem operation failed.
     #[error(transparent)]
     Io(#[from] io::Error),
+}
+
+/// The entries [`MaildirClient::read_readable_entries`] read, and the
+/// ones it could not.
+#[derive(Debug)]
+pub struct MaildirEntriesRead {
+    /// The entries read, bodies loaded.
+    pub entries: BTreeSet<MaildirFullEntry>,
+    /// The entries that could not be read, in the order given.
+    pub unreadable: Vec<MaildirUnreadableEntry>,
+}
+
+/// An entry [`MaildirClient::read_readable_entries`] could not read.
+#[derive(Debug)]
+pub struct MaildirUnreadableEntry {
+    /// The entry as given.
+    pub entry: MaildirEntry,
+    /// The failure, naming the entry's path.
+    pub error: MaildirClientError,
+}
+
+/// The Maildirs [`MaildirClient::list_maildirs`] found, and the folders
+/// it could not read.
+#[derive(Debug)]
+pub struct MaildirListing {
+    /// The Maildirs found.
+    pub maildirs: BTreeSet<Maildir>,
+    /// The folders, folder entries and links that could not be read, in
+    /// walk order.
+    pub unreadable: Vec<MaildirUnreadableFolder>,
+}
+
+/// A folder, folder entry or link [`MaildirClient::list_maildirs`]
+/// could not read.
+#[derive(Debug)]
+pub struct MaildirUnreadableFolder {
+    /// The folder, or the link, that could not be read.
+    pub path: MaildirFsPath,
+    /// The failure, naming the path.
+    pub error: io::Error,
 }
 
 /// Std-blocking Maildir client. Wraps a [`MaildirStore`] (filesystem
@@ -382,23 +422,30 @@ impl MaildirClient {
     /// Runs [`MaildirList`] under the store root; honours the store's
     /// layout flag.
     ///
-    /// A folder that cannot be read is skipped with a warning naming it,
-    /// so one unreadable folder does not hide the store. A symlink to a
-    /// folder the walk already reached is skipped too, which keeps a link
-    /// back to an ancestor from listing the same folders again and again.
-    pub fn list_maildirs(&self) -> Result<BTreeSet<Maildir>, MaildirClientError> {
+    /// A folder that cannot be read is returned in
+    /// [`MaildirListing::unreadable`], so one unreadable folder does not
+    /// hide the store. A symlink to a folder the walk already reached is
+    /// skipped with a warning, which keeps a link back to an ancestor from
+    /// listing the same folders again and again.
+    pub fn list_maildirs(&self) -> Result<MaildirListing, MaildirClientError> {
         let mut coroutine = MaildirList::new(&self.store);
         let mut reached = BTreeSet::new();
+        let mut unreadable = Vec::new();
         let mut arg = None;
 
         loop {
             match coroutine.resume(arg.take()) {
-                MaildirCoroutineState::Complete(Ok(out)) => return Ok(out),
+                MaildirCoroutineState::Complete(Ok(maildirs)) => {
+                    return Ok(MaildirListing {
+                        maildirs,
+                        unreadable,
+                    });
+                }
                 MaildirCoroutineState::Complete(Err(err)) => return Err(err.into()),
                 MaildirCoroutineState::Yielded(MaildirYield::WantsDirRead(paths)) => {
                     let mut entries = BTreeMap::new();
                     for path in paths {
-                        let names = read_folder(&path, &mut reached);
+                        let names = read_folder(&path, &mut reached, &mut unreadable);
                         entries.insert(path, names);
                     }
                     arg = Some(MaildirReply::DirRead(entries));
@@ -562,8 +609,9 @@ impl MaildirClient {
             .collect()
     }
 
-    /// Like [`Self::read_entries`], skipping with a warning an entry
-    /// that cannot be read rather than failing the whole batch.
+    /// Like [`Self::read_entries`], returning an entry that cannot be
+    /// read in [`MaildirEntriesRead::unreadable`] rather than failing the
+    /// whole batch.
     ///
     /// Fits a listing, where one unreadable file should not hide the
     /// rest of the Maildir.
@@ -571,19 +619,28 @@ impl MaildirClient {
         &self,
         maildir: &Maildir,
         entries: &[MaildirEntry],
-    ) -> BTreeSet<MaildirFullEntry> {
+    ) -> MaildirEntriesRead {
         let table = self.keyword_table(maildir);
+        let mut read = MaildirEntriesRead {
+            entries: BTreeSet::new(),
+            unreadable: Vec::new(),
+        };
 
-        entries
-            .iter()
-            .filter_map(|entry| match self.read_entry_with(entry, &table) {
-                Ok(entry) => Some(entry),
-                Err(err) => {
-                    warn!("skip entry: {err}");
-                    None
+        for entry in entries {
+            match self.read_entry_with(entry, &table) {
+                Ok(full) => {
+                    read.entries.insert(full);
                 }
-            })
-            .collect()
+                Err(error) => {
+                    debug!("skip entry: {error}");
+                    let entry = entry.clone();
+                    read.unreadable
+                        .push(MaildirUnreadableEntry { entry, error });
+                }
+            }
+        }
+
+        read
     }
 
     /// Parallel variant of [`Self::read_entries`] using
@@ -936,7 +993,12 @@ impl MaildirClient {
 /// Wraps an [`io::Error`] so its message names the path it failed on,
 /// its kind kept.
 fn at(path: &MaildirFsPath) -> impl FnOnce(io::Error) -> MaildirClientError + '_ {
-    move |err| io::Error::new(err.kind(), format!("{path}: {err}")).into()
+    move |err| named(path, err).into()
+}
+
+/// Rewords `err` so its message names `path`, its kind kept.
+fn named(path: &MaildirFsPath, err: io::Error) -> io::Error {
+    io::Error::new(err.kind(), format!("{path}: {err}"))
 }
 
 /// Flushes the file at `path` to stable storage.
@@ -1011,11 +1073,12 @@ fn file_kind(entry: &fs::DirEntry) -> MaildirFileKind {
 /// The children of the folder `path` for the listing walk, `reached`
 /// holding the canonical folders walked so far.
 ///
-/// An unreadable folder or child is skipped with a warning, and so is a
-/// symlink to a folder already reached.
+/// An unreadable folder, folder entry or link goes to `unreadable`, and a
+/// symlink to a folder already reached is skipped with a warning.
 fn read_folder(
     path: &MaildirFsPath,
     reached: &mut BTreeSet<PathBuf>,
+    unreadable: &mut Vec<MaildirUnreadableFolder>,
 ) -> BTreeMap<MaildirFsPath, MaildirFileKind> {
     trace!("read_dir {path}");
     let mut names = BTreeMap::new();
@@ -1028,7 +1091,10 @@ fn read_folder(
         Ok(iter) => iter,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return names,
         Err(err) => {
-            warn!("skip folder {path}: {err}");
+            debug!("skip folder {path}: {err}");
+            let error = named(path, err);
+            let path = path.clone();
+            unreadable.push(MaildirUnreadableFolder { path, error });
             return names;
         }
     };
@@ -1037,30 +1103,34 @@ fn read_folder(
         let entry = match entry {
             Ok(entry) => entry,
             Err(err) => {
-                warn!("skip an entry of folder {path}: {err}");
+                debug!("skip an entry of folder {path}: {err}");
+                let error = named(path, err);
+                let path = path.clone();
+                unreadable.push(MaildirUnreadableFolder { path, error });
                 continue;
             }
         };
-        let child = entry.path();
+        let child = MaildirFsPath::from(entry.path());
 
         let is_link = entry.file_type().is_ok_and(|t| t.is_symlink());
-        if is_link && fs::metadata(&child).is_ok_and(|m| m.is_dir()) {
-            match fs::canonicalize(&child) {
+        if is_link && fs::metadata(child.as_str()).is_ok_and(|m| m.is_dir()) {
+            match fs::canonicalize(child.as_str()) {
                 Ok(target) if reached.insert(target.clone()) => {}
                 Ok(target) => {
-                    let child = child.display();
                     let target = target.display();
                     warn!("skip folder {child}: it links to {target}, already listed");
                     continue;
                 }
                 Err(err) => {
-                    warn!("skip folder {}: {err}", child.display());
+                    debug!("skip folder {child}: {err}");
+                    let error = named(&child, err);
+                    unreadable.push(MaildirUnreadableFolder { path: child, error });
                     continue;
                 }
             }
         }
 
-        names.insert(MaildirFsPath::from(child), file_kind(&entry));
+        names.insert(child, file_kind(&entry));
     }
 
     names
@@ -1072,4 +1142,30 @@ fn has_keyword_letters(entry: &MaildirEntry) -> bool {
     let name = entry.path().file_name();
     name.and_then(|name| info_letters(name, entry.separator))
         .is_some_and(|letters| letters.chars().any(|c| c.is_ascii_lowercase()))
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{collections::BTreeSet, vec::Vec};
+
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use crate::{client::read_folder, path::MaildirFsPath};
+
+    #[test]
+    fn a_folder_gone_when_read_is_no_failure() {
+        let dir = tempdir().unwrap();
+        let gone = dir.path().join("Gone");
+        fs::create_dir(&gone).unwrap();
+        fs::remove_dir(&gone).unwrap();
+
+        let path = MaildirFsPath::from(gone);
+        let mut unreadable = Vec::new();
+        let names = read_folder(&path, &mut BTreeSet::new(), &mut unreadable);
+
+        assert!(names.is_empty());
+        assert!(unreadable.is_empty());
+    }
 }

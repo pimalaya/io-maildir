@@ -23,7 +23,7 @@ fn a_store_holding_plain_files_beside_its_folders_lists() {
         fs::write(dir.path().join(file), b"").expect("write sidecar");
     }
 
-    let maildirs = client.list_maildirs().expect("list maildirs");
+    let maildirs = client.list_maildirs().expect("list maildirs").maildirs;
     let names: Vec<_> = maildirs
         .iter()
         .filter_map(|maildir| client.store.relative(maildir.path()))

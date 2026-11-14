@@ -1,7 +1,7 @@
 ---
 cairn: change
 id: a-listing-returns-what-it-could-not-read
-status: active
+status: landed
 created: 2026-11-14
 ---
 

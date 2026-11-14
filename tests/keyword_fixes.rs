@@ -4,6 +4,8 @@
 //! and the header round-trip of a keyword containing the active
 //! separator.
 
+#![cfg(feature = "client")]
+
 use std::{collections::BTreeMap, path::Path};
 
 use io_maildir::{

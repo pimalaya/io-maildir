@@ -5,6 +5,8 @@
 //! the custom keywords its mailbox spells, through the dovecot sidecar
 //! or through a header.
 
+#![cfg(feature = "client")]
+
 use std::{collections::BTreeMap, fs};
 
 use io_maildir::{

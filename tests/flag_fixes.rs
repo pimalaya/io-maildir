@@ -4,6 +4,8 @@
 //! still in the new subdirectory, where a Maildir name has no info
 //! suffix to hold a flag.
 
+#![cfg(feature = "client")]
+
 use std::path::Path;
 
 use io_maildir::{

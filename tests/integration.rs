@@ -28,6 +28,8 @@
 //!   → MAILDIR LIST              (final state: only inbox)
 //! ```
 
+#![cfg(feature = "client")]
+
 use std::path::Path;
 
 use io_maildir::{
